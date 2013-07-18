@@ -37,7 +37,6 @@ static int dyplo_open(struct inode *inode, struct file *filp)
 {
 	int status = 0;
 	struct dyplo_dev *dev; /* device information */
-	printk(KERN_WARNING "%s\n", __func__);
 
 	dev = container_of(inode->i_cdev, struct dyplo_dev, cdev);
 	if (down_interruptible(&dev->fop_sem))
@@ -50,14 +49,12 @@ static int dyplo_open(struct inode *inode, struct file *filp)
 static int dyplo_release(struct inode *inode, struct file *filp)
 {
 	//struct dyplo_dev *dev = filp->private_data;
-	printk(KERN_WARNING "%s\n", __func__);
 	return 0;
 }
 
 static ssize_t dyplo_write (struct file *filp, const char __user *buf, size_t count,
 	loff_t *pos)
 {
-	printk(KERN_WARNING "%s(%d)\n", __func__, count);
 	return count;
 }
 
@@ -68,26 +65,23 @@ static ssize_t dyplo_read(struct file *filp, char __user *buf, size_t count,
 	int len;
 	struct dyplo_dev *dev = filp->private_data;
 	int __iomem *mapped_memory = dev->base;
-	char buffer[64];
-	
-	printk(KERN_WARNING "%s(%d)\n", __func__, count);
+	int i;
+	int buffer[0x11];
 
 	// Make "cat /dev/dyplo" return quickly
 	if (*f_pos)
 		return 0;
 
 	if (down_interruptible(&dev->fop_sem))
+		return -ERESTARTSYS;
+
+	if (count > 0x40)
 	{
-		status = -ERESTARTSYS;
-		goto error;
+		count = 0x41;
+		((char*)buffer)[0x40] = '\n';
 	}
-
-	/* First word is device ID */
-	len = sprintf(buffer, "%x\n", 42); //mapped_memory[0]);
-	
-	if (len < count)
-		count = len;
-
+	for (i = 0; i < 0x10; ++i)
+		buffer[i] = mapped_memory[i];
 	if (copy_to_user(buf, buffer, count))
 	{
 		status = -EFAULT;
@@ -99,7 +93,6 @@ static ssize_t dyplo_read(struct file *filp, char __user *buf, size_t count,
 	}
 
 	up(&dev->fop_sem);
-error:
 	return status;
 }
 

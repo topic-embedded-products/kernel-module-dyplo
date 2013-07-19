@@ -11,13 +11,13 @@
 #include <linux/wait.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
+#include <linux/interrupt.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
-#include <linux/byteorder/generic.h>
 
 
 
-
+/* Try to keep the following statement on line 21 */
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Systems");
 
@@ -62,7 +62,6 @@ static ssize_t dyplo_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
 	int status;
-	int len;
 	struct dyplo_dev *dev = filp->private_data;
 	int __iomem *mapped_memory = dev->base;
 	int i;
@@ -116,7 +115,7 @@ static int dyplo_mmap(struct file *filp, struct vm_area_struct *vma)
 
 static long dyplo_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
 {
-	printk(KERN_WARNING "%s(%x, %x)\n", __func__, cmd, arg);
+	printk(KERN_WARNING "%s(%x, %lx)\n", __func__, cmd, arg);
 	return -ENOTTY;
 }
 
@@ -139,20 +138,33 @@ static struct file_operations dyplo_fops =
 	.release = dyplo_release,
 };
 
+/* Interrupt service routine */
+static irqreturn_t dyplo_isr(int irq, void *dev_id)
+{
+	printk(KERN_DEBUG "%s()\n", __func__);
+	return IRQ_HANDLED;
+}
+
+
 static int dyplo_probe(struct platform_device *pdev)
 {
 	struct dyplo_dev *dev;
 	dev_t devt;
 	struct device *device;
 	int retval;
-
-	printk(KERN_WARNING "%s\n", __func__);
+	int irq;
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
 	dev_set_drvdata(&pdev->dev, dev);
 	sema_init(&dev->fop_sem, 1);
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		dev_err(&pdev->dev, "IRQ resource missing\n");
+		return -ENOENT;
+	}
 
 	dev->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	dev->base = devm_request_and_ioremap(&pdev->dev, dev->mem);
@@ -164,6 +176,12 @@ static int dyplo_probe(struct platform_device *pdev)
 	if (retval < 0)
 		return retval;
 	dev->devt = devt;
+
+	retval = request_irq(irq, dyplo_isr, 0, pdev->name, dev);
+	if (retval) {
+		dev_err(&pdev->dev, "Cannot claim IRQ\n");
+		goto failed_request_irq;
+	}
 
 	cdev_init(&dev->cdev, &dyplo_fops);
 	dev->cdev.owner = THIS_MODULE;
@@ -188,7 +206,7 @@ static int dyplo_probe(struct platform_device *pdev)
 			goto failed_device_create;
 	}
 
-	printk(KERN_WARNING "dyplo OK start=%x end=%x name=%s\n",
+	printk(KERN_NOTICE "dyplo OK start=%x end=%x name=%s\n",
 		dev->mem->start, dev->mem->end, dev->mem->name);
 
 	return 0;
@@ -199,6 +217,7 @@ failed_device_create:
 	class_destroy(dev->class);
 failed_class:
 failed_cdev:
+failed_request_irq:
 	unregister_chrdev_region(devt, 1);
 	return retval;
 }

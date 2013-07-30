@@ -23,32 +23,46 @@ MODULE_AUTHOR("Topic Embedded Systems");
 
 static const char DRIVER_CLASS_NAME[] = "dyplo";
 static const char DRIVER_CONTROL_NAME[] = "dyploctl";
-static const char DRIVER_DATA_NAME[] = "dyplo%d";
+static const char DRIVER_CONFIG_NAME[] = "dyplocfg%d";
+//static const char DRIVER_FIFO_IN_NAME[] = "dyploin%d";
+//static const char DRIVER_FIFO_OUT_NAME[] = "dyploout%d";
 
-/* Expected to become something that is read from the logic */
-#define NUMBER_OF_DATA_DEVICES	8
+#define CONFIG_SIZE	(64*1024)
 
 struct dyplo_dev; /* forward */
 
-struct dyplo_data_dev
+struct dyplo_config_dev
 {
 	struct dyplo_dev* parent;
+	void __iomem *base;
 	/* more to come... */
+};
+
+struct dyplo_fifo_dev
+{
+	struct dyplo_config_dev* config_parent;
+	int index;
 };
 
 struct dyplo_dev
 {
 	struct cdev cdev_control;
-	struct cdev cdev_data;
+	struct cdev cdev_config;
 	dev_t devt;
 	struct class *class;
 	struct semaphore fop_sem;
 	struct resource *mem;
 	void __iomem *base;
 	int irq;
-	int number_of_data_devices;
-	struct dyplo_data_dev *data_devices;
+	int number_of_config_devices;
+	struct dyplo_config_dev *config_devices;
+	struct dyplo_fifo_dev *fifo_devices;
 };
+
+static unsigned int dyplo_get_config_mem_offset(struct dyplo_config_dev *cfg_dev)
+{
+	return ((char*)cfg_dev->base - (char*)cfg_dev->parent->base);
+}
 
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
 {
@@ -160,31 +174,144 @@ static struct file_operations dyplo_ctl_fops =
 	.release = dyplo_ctl_release,
 };
 
-static int dyplo_data_open(struct inode *inode, struct file *filp)
+static int dyplo_cfg_open(struct inode *inode, struct file *filp)
 {
 	int status = 0;
 	struct dyplo_dev *dev; /* device information */
+	int index = MINOR(inode->i_rdev);
 
 	printk(KERN_DEBUG "%s index=%d i_cdev=%p\n",
-		__func__, MINOR(inode->i_rdev), inode->i_cdev);
+		__func__, index, inode->i_cdev);
 
-	dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_data);
+	dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_config);
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
-	filp->private_data = dev; /* for other methods */
+	filp->private_data = &dev->config_devices[index]; /* for other methods */
 	up(&dev->fop_sem);
 	return status;
 }
 
-static struct file_operations dyplo_data_fops =
+static int dyplo_cfg_release(struct inode *inode, struct file *filp)
+{
+	return 0;
+}
+
+static ssize_t dyplo_cfg_read(struct file *filp, char __user *buf, size_t count,
+                loff_t *f_pos)
+{
+	int status;
+	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	struct dyplo_dev *dev = cfg_dev->parent;
+	int __iomem *mapped_memory = dev->base;
+	size_t offset;
+
+	/* EOF when past our area */
+	if (*f_pos >= CONFIG_SIZE)
+		return 0;
+	
+	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
+	count &= ~0x03;
+	if ((offset + count) > CONFIG_SIZE)
+		count = CONFIG_SIZE - offset;
+
+	if (copy_to_user(buf, mapped_memory + (offset >> 2), count))
+	{
+		status = -EFAULT;
+	}
+	else
+	{
+		status = count;
+		*f_pos = offset + count;
+	}
+
+	return status;
+}
+
+static ssize_t dyplo_cfg_write (struct file *filp, const char __user *buf, size_t count,
+	loff_t *f_pos)
+{
+	int status;
+	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	struct dyplo_dev *dev = cfg_dev->parent;
+	int __iomem *mapped_memory = dev->base;
+	size_t offset;
+
+	/* EOF when past our area */
+	if (*f_pos >= CONFIG_SIZE)
+		return 0;
+	
+	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
+	count &= ~0x03;
+	if ((offset + count) > CONFIG_SIZE)
+		count = CONFIG_SIZE - offset;
+
+	if (copy_from_user(mapped_memory + (offset >> 2), buf, count))
+	{
+		status = -EFAULT;
+	}
+	else
+	{
+		status = count;
+		*f_pos = offset + count;
+	}
+
+	return status;
+}
+
+loff_t dyplo_cfg_llseek(struct file *filp, loff_t off, int whence)
+{
+    loff_t newpos;
+
+    switch(whence) {
+      case 0: /* SEEK_SET */
+        newpos = off;
+        break;
+
+      case 1: /* SEEK_CUR */
+        newpos = filp->f_pos + off;
+        break;
+
+      case 2: /* SEEK_END */
+        newpos = CONFIG_SIZE + off;
+        break;
+
+      default: /* can't happen */
+        return -EINVAL;
+    }
+    if (newpos < 0) return -EINVAL;
+    if (newpos > CONFIG_SIZE) return -EINVAL;
+    filp->f_pos = newpos;
+    return newpos;
+}
+
+static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	struct dyplo_config_dev *cfg_dev = filp->private_data;
+
+	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
+	unsigned long physical =
+		cfg_dev->parent->mem->start +
+		dyplo_get_config_mem_offset(cfg_dev) +
+		off;
+	unsigned long vsize = vma->vm_end - vma->vm_start;
+	if (vsize > (CONFIG_SIZE - off))
+		return -EINVAL; /*  spans too high */
+
+	if (remap_pfn_range(vma, vma->vm_start, physical, vsize, vma->vm_page_prot))
+		return -EAGAIN;
+
+	return 0;
+}
+
+static struct file_operations dyplo_cfg_fops =
 {
 	.owner = THIS_MODULE,
-	.read = dyplo_ctl_read,
-	.write = dyplo_ctl_write,
-	.mmap = dyplo_ctl_mmap,
-	.unlocked_ioctl = dyplo_ctl_ioctl,
-	.open = dyplo_data_open,
-	.release = dyplo_ctl_release,
+	.read = dyplo_cfg_read,
+	.write = dyplo_cfg_write,
+	.llseek = dyplo_cfg_llseek,
+	.mmap = dyplo_cfg_mmap,
+	.open = dyplo_cfg_open,
+	.release = dyplo_cfg_release,
 };
 
 
@@ -195,6 +322,15 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
+{
+	int index = dyplo_get_config_mem_offset(cfg_dev) / CONFIG_SIZE;
+	if (index != 1) /* For now, assume device 1 is the fifo interface */
+		return 0;
+	/* TODO: Allocate and register fifo devices */
+	printk(KERN_NOTICE "%s: %d", __func__, index);
+	return 0;
+}
 
 static int dyplo_probe(struct platform_device *pdev)
 {
@@ -222,19 +358,23 @@ static int dyplo_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Failed to map device memory\n");
 		return -ENXIO;
 	}
-		
-	dev->number_of_data_devices = NUMBER_OF_DATA_DEVICES;
-	dev->data_devices = devm_kzalloc(&pdev->dev,
-		dev->number_of_data_devices * sizeof(struct dyplo_data_dev),
+
+	/* Each logic block takes 64k address space, so the number of
+	 * devices is the address space divided by 64, minus one for the
+	 * generic control (which is accomplished by "end" being inclusive).
+	 * */
+	dev->number_of_config_devices =
+		(dev->mem->end - dev->mem->start) / CONFIG_SIZE;
+	dev->config_devices = devm_kzalloc(&pdev->dev,
+		dev->number_of_config_devices * sizeof(struct dyplo_config_dev),
 		GFP_KERNEL);
-	if (!dev->data_devices) {
-		dev_err(&pdev->dev, "No memory for %d data devices\n", dev->number_of_data_devices);
+	if (!dev->config_devices) {
+		dev_err(&pdev->dev, "No memory for %d cfg devices\n", dev->number_of_config_devices);
 		return -ENOMEM;
 	}
-	
 
 	/* Create /dev/dyplo.. devices */
-	retval = alloc_chrdev_region(&devt, 0, dev->number_of_data_devices + 1, DRIVER_CLASS_NAME);
+	retval = alloc_chrdev_region(&devt, 0, dev->number_of_config_devices + 1, DRIVER_CLASS_NAME);
 	if (retval < 0)
 		return retval;
 	dev->devt = devt;
@@ -249,15 +389,15 @@ static int dyplo_probe(struct platform_device *pdev)
 	dev->cdev_control.owner = THIS_MODULE;
 	retval = cdev_add(&dev->cdev_control, devt, 1);
 	if (retval) {
-		dev_err(&pdev->dev, "cdev_add(control) failed\n");
+		dev_err(&pdev->dev, "cdev_add(ctl) failed\n");
 		goto failed_cdev;
 	}
 
-	cdev_init(&dev->cdev_data, &dyplo_data_fops);
-	dev->cdev_data.owner = THIS_MODULE;
-	retval = cdev_add(&dev->cdev_data, devt + 1, dev->number_of_data_devices);
+	cdev_init(&dev->cdev_config, &dyplo_cfg_fops);
+	dev->cdev_config.owner = THIS_MODULE;
+	retval = cdev_add(&dev->cdev_config, devt + 1, dev->number_of_config_devices);
 	if (retval) {
-		dev_err(&pdev->dev, "cdev_add(data) failed\n");
+		dev_err(&pdev->dev, "cdev_add(cfg) failed\n");
 		goto failed_cdev;
 	}
 	
@@ -278,27 +418,35 @@ static int dyplo_probe(struct platform_device *pdev)
 		goto failed_device_create;
 	}
 
-	while (device_index < dev->number_of_data_devices)
+	while (device_index < dev->number_of_config_devices)
 	{
-		dev->data_devices[device_index].parent = dev;
-		device = device_create(dev->class, &pdev->dev, devt + 1 + device_index, 
-			&dev->data_devices[device_index], DRIVER_DATA_NAME, device_index);
+		struct dyplo_config_dev* cfg_dev = 
+				&dev->config_devices[device_index];
+		cfg_dev->parent = dev;
+		cfg_dev->base = 
+			((char*)dev->base + (CONFIG_SIZE * device_index));
+		device = device_create(dev->class, &pdev->dev,
+			devt + 1 + device_index, 
+			cfg_dev, DRIVER_CONFIG_NAME, device_index);
 		if (IS_ERR(device)) {
-			dev_err(&pdev->dev, "unable to create data device %d\n", device_index);
+			dev_err(&pdev->dev, "unable to create config device %d\n",
+				device_index);
 			retval = PTR_ERR(device);
-			goto failed_device_create_data;
+			goto failed_device_create_cfg;
+		}
+		retval = create_sub_devices(cfg_dev);
+		if (retval) {
+			dev_err(&pdev->dev, "unable to create sub-device %d: %d\n",
+				device_index, retval);
+			/* Should we abort? */
 		}
 		++device_index;
 	}
 
-	printk(KERN_NOTICE "dyplo OK start=%x end=%x name=%s dev=%p data=%p\n",
-		dev->mem->start, dev->mem->end, dev->mem->name,
-		dev, dev->data_devices);
-
 	return 0;
 	
 		
-failed_device_create_data:
+failed_device_create_cfg:
 	while (device_index) {
 		device_destroy(dev->class, dev->devt + 1 + device_index);
 		--device_index;
@@ -309,7 +457,7 @@ failed_class:
 failed_cdev:
 	free_irq(dev->irq, dev);
 failed_request_irq:
-	unregister_chrdev_region(devt, dev->number_of_data_devices + 1);
+	unregister_chrdev_region(devt, dev->number_of_config_devices + 1);
 	return retval;
 }
 
@@ -322,10 +470,10 @@ static int dyplo_remove(struct platform_device *pdev)
 	if (!dev)
 		return -ENODEV;
 	
-	for (i = dev->number_of_data_devices; i >= 0; --i)
+	for (i = dev->number_of_config_devices; i >= 0; --i)
 		device_destroy(dev->class, dev->devt + i);
 	class_destroy(dev->class);
-	unregister_chrdev_region(dev->devt, dev->number_of_data_devices + 1);
+	unregister_chrdev_region(dev->devt, dev->number_of_config_devices + 1);
 	free_irq(dev->irq, dev);
 	return 0;
 }

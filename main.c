@@ -25,7 +25,16 @@ static const char DRIVER_CLASS_NAME[] = "dyplo";
 static const char DRIVER_CONTROL_NAME[] = "dyploctl";
 static const char DRIVER_DATA_NAME[] = "dyplo%d";
 
+/* Expected to become something that is read from the logic */
 #define NUMBER_OF_DATA_DEVICES	8
+
+struct dyplo_dev; /* forward */
+
+struct dyplo_data_dev
+{
+	struct dyplo_dev* parent;
+	/* more to come... */
+};
 
 struct dyplo_dev
 {
@@ -37,6 +46,8 @@ struct dyplo_dev
 	struct resource *mem;
 	void __iomem *base;
 	int irq;
+	int number_of_data_devices;
+	struct dyplo_data_dev *data_devices;
 };
 
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
@@ -73,8 +84,7 @@ static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
 	int status;
 	struct dyplo_dev *dev = filp->private_data;
 	int __iomem *mapped_memory = dev->base;
-	int i;
-	int buffer[0x11];
+	int bytes_to_copy;
 
 	// Make "cat /dev/dyplo" return quickly
 	if (*f_pos)
@@ -83,23 +93,22 @@ static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
 
-	if (count > 0x40)
-	{
+	if (count > 0x40) {
+		bytes_to_copy = 0x40;
 		count = 0x41;
-		((char*)buffer)[0x40] = '\n';
 	}
-#if 1
-	for (i = 0; i < 0x10; ++i)
-		buffer[i] = mapped_memory[i];
-#else
-	memcpy(buffer, "Nothing interesting here yet because there's no programmable logic present yet", count);
-#endif
-	if (copy_to_user(buf, buffer, count))
+	else {
+		bytes_to_copy = count & ~3; /* Must be 32-bit aligned */
+	}
+	if (copy_to_user(buf, mapped_memory, bytes_to_copy))
 	{
 		status = -EFAULT;
 	}
 	else
 	{
+		if (count > bytes_to_copy) {
+			put_user((char)'\n', buf + bytes_to_copy);
+		}
 		status = count;
 		*f_pos += status;
 	}
@@ -156,8 +165,8 @@ static int dyplo_data_open(struct inode *inode, struct file *filp)
 	int status = 0;
 	struct dyplo_dev *dev; /* device information */
 
-	printk(KERN_DEBUG "%s i_rdev=%x i_cdev=%p\n",
-		__func__, inode->i_rdev, inode->i_cdev);
+	printk(KERN_DEBUG "%s index=%d i_cdev=%p\n",
+		__func__, MINOR(inode->i_rdev), inode->i_cdev);
 
 	dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_data);
 	if (down_interruptible(&dev->fop_sem))
@@ -209,11 +218,23 @@ static int dyplo_probe(struct platform_device *pdev)
 
 	dev->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	dev->base = devm_request_and_ioremap(&pdev->dev, dev->mem);
-	if (!dev->base)
+	if (!dev->base) {
+		dev_err(&pdev->dev, "Failed to map device memory\n");
 		return -ENXIO;
+	}
+		
+	dev->number_of_data_devices = NUMBER_OF_DATA_DEVICES;
+	dev->data_devices = devm_kzalloc(&pdev->dev,
+		dev->number_of_data_devices * sizeof(struct dyplo_data_dev),
+		GFP_KERNEL);
+	if (!dev->data_devices) {
+		dev_err(&pdev->dev, "No memory for %d data devices\n", dev->number_of_data_devices);
+		return -ENOMEM;
+	}
+	
 
 	/* Create /dev/dyplo.. devices */
-	retval = alloc_chrdev_region(&devt, 0, NUMBER_OF_DATA_DEVICES + 1, DRIVER_CLASS_NAME);
+	retval = alloc_chrdev_region(&devt, 0, dev->number_of_data_devices + 1, DRIVER_CLASS_NAME);
 	if (retval < 0)
 		return retval;
 	dev->devt = devt;
@@ -234,7 +255,7 @@ static int dyplo_probe(struct platform_device *pdev)
 
 	cdev_init(&dev->cdev_data, &dyplo_data_fops);
 	dev->cdev_data.owner = THIS_MODULE;
-	retval = cdev_add(&dev->cdev_data, devt + 1, NUMBER_OF_DATA_DEVICES);
+	retval = cdev_add(&dev->cdev_data, devt + 1, dev->number_of_data_devices);
 	if (retval) {
 		dev_err(&pdev->dev, "cdev_add(data) failed\n");
 		goto failed_cdev;
@@ -257,10 +278,11 @@ static int dyplo_probe(struct platform_device *pdev)
 		goto failed_device_create;
 	}
 
-	while (device_index < NUMBER_OF_DATA_DEVICES)
+	while (device_index < dev->number_of_data_devices)
 	{
-		device = device_create(dev->class, &pdev->dev, devt + 1 + device_index, dev,
-					DRIVER_DATA_NAME, device_index);
+		dev->data_devices[device_index].parent = dev;
+		device = device_create(dev->class, &pdev->dev, devt + 1 + device_index, 
+			&dev->data_devices[device_index], DRIVER_DATA_NAME, device_index);
 		if (IS_ERR(device)) {
 			dev_err(&pdev->dev, "unable to create data device %d\n", device_index);
 			retval = PTR_ERR(device);
@@ -269,8 +291,9 @@ static int dyplo_probe(struct platform_device *pdev)
 		++device_index;
 	}
 
-	printk(KERN_NOTICE "dyplo OK start=%x end=%x name=%s\n",
-		dev->mem->start, dev->mem->end, dev->mem->name);
+	printk(KERN_NOTICE "dyplo OK start=%x end=%x name=%s dev=%p data=%p\n",
+		dev->mem->start, dev->mem->end, dev->mem->name,
+		dev, dev->data_devices);
 
 	return 0;
 	
@@ -286,7 +309,7 @@ failed_class:
 failed_cdev:
 	free_irq(dev->irq, dev);
 failed_request_irq:
-	unregister_chrdev_region(devt, NUMBER_OF_DATA_DEVICES + 1);
+	unregister_chrdev_region(devt, dev->number_of_data_devices + 1);
 	return retval;
 }
 
@@ -299,10 +322,10 @@ static int dyplo_remove(struct platform_device *pdev)
 	if (!dev)
 		return -ENODEV;
 	
-	for (i = NUMBER_OF_DATA_DEVICES; i >= 0; --i)
+	for (i = dev->number_of_data_devices; i >= 0; --i)
 		device_destroy(dev->class, dev->devt + i);
 	class_destroy(dev->class);
-	unregister_chrdev_region(dev->devt, NUMBER_OF_DATA_DEVICES + 1);
+	unregister_chrdev_region(dev->devt, dev->number_of_data_devices + 1);
 	free_irq(dev->irq, dev);
 	return 0;
 }

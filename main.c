@@ -24,10 +24,14 @@ MODULE_AUTHOR("Topic Embedded Systems");
 static const char DRIVER_CLASS_NAME[] = "dyplo";
 static const char DRIVER_CONTROL_NAME[] = "dyploctl";
 static const char DRIVER_CONFIG_NAME[] = "dyplocfg%d";
-//static const char DRIVER_FIFO_IN_NAME[] = "dyploin%d";
-//static const char DRIVER_FIFO_OUT_NAME[] = "dyploout%d";
+static const char DRIVER_FIFO_CLASS_NAME[] = "dyplo-fifo";
+static const char DRIVER_FIFO_WRITE_NAME[] = "dyplow%d";
+static const char DRIVER_FIFO_READ_NAME[] = "dyplor%d";
 
+/* Memory range for a processing block is 64k */
 #define CONFIG_SIZE	(64*1024)
+/* Each FIFO occupies 256 words address range */
+#define FIFO_MEMORY_SIZE (4*256)
 
 struct dyplo_dev; /* forward */
 
@@ -48,6 +52,8 @@ struct dyplo_dev
 {
 	struct cdev cdev_control;
 	struct cdev cdev_config;
+	struct cdev cdev_fifo_write;
+	struct cdev cdev_fifo_read;
 	dev_t devt;
 	struct class *class;
 	struct semaphore fop_sem;
@@ -56,6 +62,7 @@ struct dyplo_dev
 	int irq;
 	int number_of_config_devices;
 	struct dyplo_config_dev *config_devices;
+	int number_of_fifo_devices;
 	struct dyplo_fifo_dev *fifo_devices;
 };
 
@@ -172,6 +179,16 @@ static struct file_operations dyplo_ctl_fops =
 	.unlocked_ioctl = dyplo_ctl_ioctl,
 	.open = dyplo_ctl_open,
 	.release = dyplo_ctl_release,
+};
+
+static struct file_operations dyplo_fifo_read_fops =
+{
+	.owner = THIS_MODULE,
+};
+
+static struct file_operations dyplo_fifo_write_fops =
+{
+	.owner = THIS_MODULE,
 };
 
 static int dyplo_cfg_open(struct inode *inode, struct file *filp)
@@ -322,21 +339,115 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
+static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_dev *cfg_dev)
 {
+	int retval;
+	struct dyplo_dev *dev = cfg_dev->parent;
 	int index = dyplo_get_config_mem_offset(cfg_dev) / CONFIG_SIZE;
+	dev_t first_fifo_devt;
+	int fifo_index = 0;
+	int number_of_write_fifos;
+	int number_of_read_fifos;
+	int i;
+	struct device *device;
+
 	if (index != 1) /* For now, assume device 1 is the fifo interface */
 		return 0;
-	/* TODO: Allocate and register fifo devices */
-	printk(KERN_NOTICE "%s: %d", __func__, index);
+
+	if (dev->number_of_fifo_devices) {
+		dev_err(&pdev->dev, "Fifo's already registered\n");
+		return -EBUSY;
+	}
+	dev->number_of_fifo_devices = CONFIG_SIZE / FIFO_MEMORY_SIZE;
+	dev->fifo_devices = devm_kzalloc(&pdev->dev,
+		dev->number_of_fifo_devices * sizeof(struct dyplo_fifo_dev),
+		GFP_KERNEL);
+	if (!dev->fifo_devices) {
+		dev_err(&pdev->dev, "No memory for %d fifo devices\n",
+			dev->number_of_fifo_devices);
+		dev->number_of_fifo_devices = 0;
+		return -ENOMEM;
+	}
+	number_of_write_fifos = dev->number_of_fifo_devices / 2;
+	number_of_read_fifos = dev->number_of_fifo_devices - number_of_write_fifos;
+	
+	first_fifo_devt = dev->devt + dev->number_of_config_devices + 1;
+	retval = register_chrdev_region(first_fifo_devt,
+				dev->number_of_fifo_devices, DRIVER_FIFO_CLASS_NAME);
+	if (retval) {
+		goto error_register_chrdev_region;
+	}
+	
+	cdev_init(&dev->cdev_fifo_write, &dyplo_fifo_write_fops);
+	dev->cdev_fifo_write.owner = THIS_MODULE;
+	retval = cdev_add(&dev->cdev_fifo_write,
+		first_fifo_devt, number_of_write_fifos);
+	if (retval) {
+		dev_err(&pdev->dev, "cdev_add(cdev_fifo_write) failed\n");
+		goto error_cdev_w;
+	}
+	cdev_init(&dev->cdev_fifo_read, &dyplo_fifo_read_fops);
+	dev->cdev_fifo_read.owner = THIS_MODULE;
+	retval = cdev_add(&dev->cdev_fifo_read,
+		first_fifo_devt+number_of_write_fifos, number_of_read_fifos);
+	if (retval) {
+		dev_err(&pdev->dev, "cdev_add(cdev_fifo_read) failed\n");
+		goto error_cdev_r;
+	}
+
+	for (i = 0; i < number_of_write_fifos; ++i)
+	{
+		struct dyplo_fifo_dev *fifo_dev = 
+				&dev->fifo_devices[fifo_index];
+		fifo_dev->config_parent = cfg_dev;
+		device = device_create(dev->class, &pdev->dev,
+			first_fifo_devt + fifo_index, 
+			fifo_dev, DRIVER_FIFO_WRITE_NAME, i);
+		if (IS_ERR(device)) {
+			dev_err(&pdev->dev, "unable to create fifo write device %d\n",
+				i);
+			retval = PTR_ERR(device);
+			goto failed_device_create;
+		}
+		++fifo_index;
+	}
+	for (i = 0; i < number_of_read_fifos; ++i)
+	{
+		struct dyplo_fifo_dev *fifo_dev = 
+				&dev->fifo_devices[fifo_index];
+		fifo_dev->config_parent = cfg_dev;
+		device = device_create(dev->class, &pdev->dev,
+			first_fifo_devt + fifo_index, 
+			fifo_dev, DRIVER_FIFO_READ_NAME, i);
+		if (IS_ERR(device)) {
+			dev_err(&pdev->dev, "unable to create fifo read device %d\n",
+				i);
+			retval = PTR_ERR(device);
+			goto failed_device_create;
+		}
+		++fifo_index;
+	}
+
 	return 0;
+
+failed_device_create:
+	while (fifo_index) {
+		device_destroy(dev->class, first_fifo_devt + fifo_index);
+		--fifo_index;
+	}
+error_cdev_r:
+error_cdev_w:
+	unregister_chrdev_region(first_fifo_devt, dev->number_of_fifo_devices);
+error_register_chrdev_region:
+	dev->number_of_fifo_devices = 0;
+	return retval;
 }
 
 static int dyplo_probe(struct platform_device *pdev)
 {
 	struct dyplo_dev *dev;
-	dev_t devt;
 	struct device *device;
+	dev_t devt;
 	int retval;
 	int device_index;
 
@@ -434,7 +545,7 @@ static int dyplo_probe(struct platform_device *pdev)
 			retval = PTR_ERR(device);
 			goto failed_device_create_cfg;
 		}
-		retval = create_sub_devices(cfg_dev);
+		retval = create_sub_devices(pdev, cfg_dev);
 		if (retval) {
 			dev_err(&pdev->dev, "unable to create sub-device %d: %d\n",
 				device_index, retval);
@@ -470,10 +581,11 @@ static int dyplo_remove(struct platform_device *pdev)
 	if (!dev)
 		return -ENODEV;
 	
-	for (i = dev->number_of_config_devices; i >= 0; --i)
+	for (i = dev->number_of_config_devices + dev->number_of_fifo_devices;
+			i >= 0; --i)
 		device_destroy(dev->class, dev->devt + i);
 	class_destroy(dev->class);
-	unregister_chrdev_region(dev->devt, dev->number_of_config_devices + 1);
+	unregister_chrdev_region(dev->devt, 1 + dev->number_of_config_devices + dev->number_of_fifo_devices);
 	free_irq(dev->irq, dev);
 	return 0;
 }

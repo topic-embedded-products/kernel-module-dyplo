@@ -73,9 +73,6 @@ static int dyplo_ctl_open(struct inode *inode, struct file *filp)
 	int status = 0;
 	struct dyplo_dev *dev; /* device information */
 
-	printk(KERN_DEBUG "%s i_rdev=%x i_cdev=%p\n",
-		__func__, inode->i_rdev, inode->i_cdev);
-
 	dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_control);
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
@@ -178,20 +175,10 @@ static struct file_operations dyplo_ctl_fops =
 	.release = dyplo_ctl_release,
 };
 
-static struct file_operations dyplo_fifo_read_fops =
-{
-	.owner = THIS_MODULE,
-};
-
-static struct file_operations dyplo_fifo_write_fops =
-{
-	.owner = THIS_MODULE,
-};
-
 static int dyplo_cfg_open(struct inode *inode, struct file *filp)
 {
 	struct dyplo_dev *dev =  container_of(inode->i_cdev, struct dyplo_dev, cdev_config);
-	int index = MINOR(inode->i_rdev);
+	int index = iminor(inode);
 	struct dyplo_config_dev *cfg_dev = &dev->config_devices[index];
 	int status = 0;
 	mode_t rw_mode = filp->f_mode & (FMODE_READ | FMODE_WRITE);
@@ -341,11 +328,115 @@ static struct file_operations dyplo_cfg_fops =
 	.release = dyplo_cfg_release,
 };
 
+static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
+{
+	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_read);
+	int index = iminor(inode) - dev->number_of_config_devices - 1;
+	struct dyplo_fifo_dev *fifo_dev = &dev->fifo_devices[index];
+
+	if (filp->f_mode & FMODE_WRITE) /* read-only device */
+		return -EINVAL;
+	filp->private_data = fifo_dev;
+	return 0;
+}
+
+static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
+{
+	return 0;
+}
+
+static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t count,
+                loff_t *f_pos)
+{
+	int status;
+	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	struct dyplo_config_dev *cfg_dev = fifo_dev->config_parent;
+	int __iomem *mapped_memory =
+		cfg_dev->base + (fifo_dev->index * (FIFO_MEMORY_SIZE>>2));
+
+	if (count > FIFO_MEMORY_SIZE)
+		count = FIFO_MEMORY_SIZE;
+
+	if (copy_to_user(buf, mapped_memory, count))
+	{
+		status = -EFAULT;
+	}
+	else
+	{
+		status = count;
+		*f_pos += count;
+	}
+
+	return status;
+}
+
+static struct file_operations dyplo_fifo_read_fops =
+{
+	.owner = THIS_MODULE,
+	.read = dyplo_fifo_read_read,
+	.llseek = no_llseek,
+	.open = dyplo_fifo_read_open,
+	.release = dyplo_fifo_read_release,
+};
+
+static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
+{
+	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_write);
+	int index = iminor(inode) - dev->number_of_config_devices - 1;
+	struct dyplo_fifo_dev *fifo_dev = &dev->fifo_devices[index];
+	
+	if (filp->f_mode & FMODE_READ) /* write-only device */
+		return -EINVAL;
+	filp->private_data = fifo_dev;
+	return 0;
+}
+
+static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
+{
+	return 0;
+}
+
+static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf, size_t count,
+	loff_t *f_pos)
+{
+	int status;
+	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	struct dyplo_config_dev *cfg_dev = fifo_dev->config_parent;
+	int __iomem *mapped_memory =
+		cfg_dev->base + (fifo_dev->index * (FIFO_MEMORY_SIZE>>2));
+
+	if (count > FIFO_MEMORY_SIZE)
+		count = FIFO_MEMORY_SIZE;
+
+	if (copy_from_user(mapped_memory, buf, count))
+	{
+		status = -EFAULT;
+	}
+	else
+	{
+		status = count;
+		*f_pos += count;
+	}
+
+	return status;
+}
+
+static struct file_operations dyplo_fifo_write_fops =
+{
+	.write = dyplo_fifo_write_write,
+	.llseek = no_llseek,
+	.open = dyplo_fifo_write_open,
+	.release = dyplo_fifo_write_release,
+};
+
 
 /* Interrupt service routine */
 static irqreturn_t dyplo_isr(int irq, void *dev_id)
 {
-	printk(KERN_DEBUG "%s()\n", __func__);
+	struct dyplo_dev *dev = dev_id;
+	u32 status_reg = *((__iomem u32*)dev->base + (DYPLO_REG_IRQ_STATUS >> 2));
+	printk(KERN_DEBUG "%s(status=0x%x)\n", __func__, status_reg);
+	
 	return IRQ_HANDLED;
 }
 
@@ -410,6 +501,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		struct dyplo_fifo_dev *fifo_dev = 
 				&dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
+		fifo_dev->index = fifo_index;
 		device = device_create(dev->class, &pdev->dev,
 			first_fifo_devt + fifo_index, 
 			fifo_dev, DRIVER_FIFO_WRITE_NAME, i);
@@ -426,6 +518,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		struct dyplo_fifo_dev *fifo_dev = 
 				&dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
+		fifo_dev->index = fifo_index;
 		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
 		device = device_create(dev->class, &pdev->dev,
 			first_fifo_devt + fifo_index, 

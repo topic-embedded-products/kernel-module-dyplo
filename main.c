@@ -39,6 +39,7 @@ struct dyplo_config_dev
 {
 	struct dyplo_dev* parent;
 	void __iomem *base;
+	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
 	/* more to come... */
 };
 
@@ -193,23 +194,36 @@ static struct file_operations dyplo_fifo_write_fops =
 
 static int dyplo_cfg_open(struct inode *inode, struct file *filp)
 {
-	int status = 0;
-	struct dyplo_dev *dev; /* device information */
+	struct dyplo_dev *dev =  container_of(inode->i_cdev, struct dyplo_dev, cdev_config);
 	int index = MINOR(inode->i_rdev);
+	struct dyplo_config_dev *cfg_dev = &dev->config_devices[index];
+	int status = 0;
+	mode_t rw_mode = filp->f_mode & (FMODE_READ | FMODE_WRITE);
 
-	printk(KERN_DEBUG "%s index=%d i_cdev=%p\n",
-		__func__, index, inode->i_cdev);
-
-	dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_config);
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
-	filp->private_data = &dev->config_devices[index]; /* for other methods */
+	/* Allow only one open, or one R and one W */
+	
+	if (rw_mode & cfg_dev->open_mode) {
+		status = -EBUSY;
+		goto exit_open;
+	}
+	cfg_dev->open_mode |= rw_mode; /* Set in-use bits */
+	filp->private_data = cfg_dev; /* for other methods */
+exit_open:
 	up(&dev->fop_sem);
 	return status;
 }
 
 static int dyplo_cfg_release(struct inode *inode, struct file *filp)
 {
+	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	struct dyplo_dev *dev = cfg_dev->parent;
+
+	if (down_interruptible(&dev->fop_sem))
+		return -ERESTARTSYS;
+	cfg_dev->open_mode &= ~filp->f_mode; /* Clear in use bits */
+	up(&dev->fop_sem);
 	return 0;
 }
 

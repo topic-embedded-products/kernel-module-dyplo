@@ -14,7 +14,7 @@
 #include <linux/interrupt.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
-
+#include "dyplo.h"
 
 
 /* Try to keep the following statement on line 21 */
@@ -27,11 +27,6 @@ static const char DRIVER_CONFIG_NAME[] = "dyplocfg%d";
 static const char DRIVER_FIFO_CLASS_NAME[] = "dyplo-fifo";
 static const char DRIVER_FIFO_WRITE_NAME[] = "dyplow%d";
 static const char DRIVER_FIFO_READ_NAME[] = "dyplor%d";
-
-/* Memory range for a processing block is 64k */
-#define CONFIG_SIZE	(64*1024)
-/* Each FIFO occupies 256 words address range */
-#define FIFO_MEMORY_SIZE (4*256)
 
 struct dyplo_dev; /* forward */
 
@@ -47,6 +42,7 @@ struct dyplo_fifo_dev
 {
 	struct dyplo_config_dev* config_parent;
 	int index;
+	wait_queue_head_t fifo_wait_queue; /* So the IRQ handler can notify waiting threads */
 };
 
 struct dyplo_dev
@@ -430,6 +426,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		struct dyplo_fifo_dev *fifo_dev = 
 				&dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
+		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
 		device = device_create(dev->class, &pdev->dev,
 			first_fifo_devt + fifo_index, 
 			fifo_dev, DRIVER_FIFO_READ_NAME, i);

@@ -1,3 +1,4 @@
+#define DEBUG
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -16,7 +17,6 @@
 #include <asm/io.h>
 #include "dyplo.h"
 
-
 /* Try to keep the following statement on line 21 */
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Systems");
@@ -34,6 +34,7 @@ struct dyplo_config_dev
 {
 	struct dyplo_dev* parent;
 	void __iomem *base;
+	void __iomem *control_base;
 	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
 	/* more to come... */
 };
@@ -215,8 +216,7 @@ static ssize_t dyplo_cfg_read(struct file *filp, char __user *buf, size_t count,
 {
 	int status;
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	struct dyplo_dev *dev = cfg_dev->parent;
-	int __iomem *mapped_memory = dev->base;
+	int __iomem *mapped_memory = cfg_dev->base;
 	size_t offset;
 
 	/* EOF when past our area */
@@ -246,8 +246,7 @@ static ssize_t dyplo_cfg_write (struct file *filp, const char __user *buf, size_
 {
 	int status;
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	struct dyplo_dev *dev = cfg_dev->parent;
-	int __iomem *mapped_memory = dev->base;
+	int __iomem *mapped_memory = cfg_dev->base;
 	size_t offset;
 
 	/* EOF when past our area */
@@ -328,6 +327,23 @@ static struct file_operations dyplo_cfg_fops =
 	.release = dyplo_cfg_release,
 };
 
+/* Utilities for fifo functions */
+static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
+{
+	struct dyplo_config_dev *cfg_dev = fifo_dev->config_parent;
+	return
+		cfg_dev->base + (fifo_dev->index * (FIFO_MEMORY_SIZE>>2));
+}
+
+static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
+{
+	int index = fifo_dev->index;
+	__iomem int *control_base =
+		fifo_dev->config_parent->control_base;
+	return *(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
+}
+
+
 static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 {
 	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_read);
@@ -350,12 +366,14 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 {
 	int status;
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	struct dyplo_config_dev *cfg_dev = fifo_dev->config_parent;
-	int __iomem *mapped_memory =
-		cfg_dev->base + (fifo_dev->index * (FIFO_MEMORY_SIZE>>2));
+	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
 
-	if (count > FIFO_MEMORY_SIZE)
-		count = FIFO_MEMORY_SIZE;
+	int words_available = dyplo_fifo_read_level(fifo_dev);
+
+	pr_debug("%s(%d) fifo_level=%d\n", __func__, count, words_available);
+
+	if (count > (words_available<<2))
+		count = (words_available<<2);
 
 	if (copy_to_user(buf, mapped_memory, count))
 	{
@@ -379,6 +397,14 @@ static struct file_operations dyplo_fifo_read_fops =
 	.release = dyplo_fifo_read_release,
 };
 
+static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
+{
+	int index = fifo_dev->index;
+	__iomem int *control_base =
+		fifo_dev->config_parent->control_base;
+	return *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
+}
+
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 {
 	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_write);
@@ -401,9 +427,11 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 {
 	int status;
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	struct dyplo_config_dev *cfg_dev = fifo_dev->config_parent;
-	int __iomem *mapped_memory =
-		cfg_dev->base + (fifo_dev->index * (FIFO_MEMORY_SIZE>>2));
+	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
+
+	int words_available = dyplo_fifo_write_level(fifo_dev);
+
+	pr_debug("%s(%d) fifo_level=%d\n", __func__, count, words_available);
 
 	if (count > FIFO_MEMORY_SIZE)
 		count = FIFO_MEMORY_SIZE;
@@ -640,6 +668,8 @@ static int dyplo_probe(struct platform_device *pdev)
 		cfg_dev->parent = dev;
 		cfg_dev->base = 
 			((char*)dev->base + (CONFIG_SIZE * device_index));
+		cfg_dev->control_base =
+			((char*)dev->base + (DYPLO_NODE_REG_SIZE * (device_index + 1)));
 		device = device_create(dev->class, &pdev->dev,
 			devt + 1 + device_index, 
 			cfg_dev, DRIVER_CONFIG_NAME, device_index);

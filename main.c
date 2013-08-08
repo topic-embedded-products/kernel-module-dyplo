@@ -69,6 +69,12 @@ static unsigned int dyplo_get_config_mem_offset(struct dyplo_config_dev *cfg_dev
 	return ((char*)cfg_dev->base - (char*)cfg_dev->parent->base);
 }
 
+static unsigned int dyplo_to_physical_address(struct dyplo_dev* dev, void* ptr)
+{
+	return ((char*)ptr - (char*)dev->base) + dev->mem->start;
+}
+
+
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
 {
 	int status = 0;
@@ -100,38 +106,56 @@ static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
 	int status;
 	struct dyplo_dev *dev = filp->private_data;
 	int __iomem *mapped_memory = dev->base;
-	int bytes_to_copy;
+	size_t offset;
 
-	// Make "cat /dev/dyplo" return quickly
-	if (*f_pos)
+	/* EOF when past our area */
+	if (*f_pos >= CONFIG_SIZE)
 		return 0;
+	
+	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
+	count &= ~0x03;
+	if ((offset + count) > CONFIG_SIZE)
+		count = CONFIG_SIZE - offset;
 
-	if (down_interruptible(&dev->fop_sem))
-		return -ERESTARTSYS;
-
-	if (count > 0x40) {
-		bytes_to_copy = 0x40;
-		count = 0x41;
-	}
-	else {
-		bytes_to_copy = count & ~3; /* Must be 32-bit aligned */
-	}
-	if (copy_to_user(buf, mapped_memory, bytes_to_copy))
+	if (copy_to_user(buf, mapped_memory + (offset >> 2), count))
 	{
 		status = -EFAULT;
 	}
 	else
 	{
-		if (count > bytes_to_copy) {
-			put_user((char)'\n', buf + bytes_to_copy);
-		}
 		status = count;
-		*f_pos += status;
+		*f_pos = offset + count;
 	}
 
-	up(&dev->fop_sem);
 	return status;
 }
+
+loff_t dyplo_ctl_llseek(struct file *filp, loff_t off, int whence)
+{
+    loff_t newpos;
+
+    switch(whence) {
+      case 0: /* SEEK_SET */
+        newpos = off;
+        break;
+
+      case 1: /* SEEK_CUR */
+        newpos = filp->f_pos + off;
+        break;
+
+      case 2: /* SEEK_END */
+        newpos = CONFIG_SIZE + off;
+        break;
+
+      default: /* can't happen */
+        return -EINVAL;
+    }
+    if (newpos < 0) return -EINVAL;
+    if (newpos > CONFIG_SIZE) return -EINVAL;
+    filp->f_pos = newpos;
+    return newpos;
+}
+
 
 static int dyplo_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
@@ -170,6 +194,7 @@ static struct file_operations dyplo_ctl_fops =
 	.owner = THIS_MODULE,
 	.read = dyplo_ctl_read,
 	.write = dyplo_ctl_write,
+	.llseek = dyplo_ctl_llseek,
 	.mmap = dyplo_ctl_mmap,
 	.unlocked_ioctl = dyplo_ctl_ioctl,
 	.open = dyplo_ctl_open,

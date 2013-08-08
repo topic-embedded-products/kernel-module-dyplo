@@ -33,8 +33,8 @@ struct dyplo_dev; /* forward */
 struct dyplo_config_dev
 {
 	struct dyplo_dev* parent;
-	void __iomem *base;
-	void __iomem *control_base;
+	u32 __iomem *base;
+	u32 __iomem *control_base;
 	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
 	/* more to come... */
 };
@@ -56,12 +56,14 @@ struct dyplo_dev
 	struct class *class;
 	struct semaphore fop_sem;
 	struct resource *mem;
-	void __iomem *base;
+	u32 __iomem *base;
 	int irq;
 	int number_of_config_devices;
 	struct dyplo_config_dev *config_devices;
 	int number_of_fifo_devices;
 	struct dyplo_fifo_dev *fifo_devices;
+	/* Need to know wich device is the CPU-PL interface */
+	struct dyplo_config_dev* fifo_config_device;
 };
 
 static unsigned int dyplo_get_config_mem_offset(struct dyplo_config_dev *cfg_dev)
@@ -105,7 +107,7 @@ static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
 {
 	int status;
 	struct dyplo_dev *dev = filp->private_data;
-	int __iomem *mapped_memory = dev->base;
+	u32 __iomem *mapped_memory = dev->base;
 	size_t offset;
 
 	/* EOF when past our area */
@@ -177,7 +179,7 @@ static int dyplo_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
 
 static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
 {
-	printk(KERN_WARNING "%s(%x, %lx)\n", __func__, cmd, arg);
+	/* printk(KERN_DEBUG "%s(%x, %lx)\n", __func__, cmd, arg); */
 	return -ENOTTY;
 }
 
@@ -241,7 +243,7 @@ static ssize_t dyplo_cfg_read(struct file *filp, char __user *buf, size_t count,
 {
 	int status;
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	int __iomem *mapped_memory = cfg_dev->base;
+	u32 __iomem *mapped_memory = cfg_dev->base;
 	size_t offset;
 
 	/* EOF when past our area */
@@ -271,7 +273,7 @@ static ssize_t dyplo_cfg_write (struct file *filp, const char __user *buf, size_
 {
 	int status;
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	int __iomem *mapped_memory = cfg_dev->base;
+	u32 __iomem *mapped_memory = cfg_dev->base;
 	size_t offset;
 
 	/* EOF when past our area */
@@ -362,9 +364,11 @@ static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
 
 static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 {
-	int index = fifo_dev->index;
+	int index = fifo_dev->index - 32; /* Read devices start at 32 */
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
+	pr_debug("%s index=%d @ %p\n", __func__, index,
+		(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index));
 	return *(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
 }
 
@@ -395,7 +399,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 
 	int words_available = dyplo_fifo_read_level(fifo_dev);
 
-	pr_debug("%s(%d) fifo_level=%d\n", __func__, count, words_available);
+	pr_debug("%s(%d) fifo_level=%d @ %p\n", __func__, count, words_available, mapped_memory);
 
 	if (count > (words_available<<2))
 		count = (words_available<<2);
@@ -427,6 +431,8 @@ static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index;
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
+	pr_debug("%s index=%d @ %p\n", __func__, index,
+		(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index));
 	return *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
 }
 
@@ -456,7 +462,7 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 
 	int words_available = dyplo_fifo_write_level(fifo_dev);
 
-	pr_debug("%s(%d) fifo_level=%d\n", __func__, count, words_available);
+	pr_debug("%s(%d) fifo_level=%d @ %p\n", __func__, count, words_available, mapped_memory);
 
 	if (count > FIFO_MEMORY_SIZE)
 		count = FIFO_MEMORY_SIZE;
@@ -486,10 +492,31 @@ static struct file_operations dyplo_fifo_write_fops =
 /* Interrupt service routine */
 static irqreturn_t dyplo_isr(int irq, void *dev_id)
 {
-	struct dyplo_dev *dev = dev_id;
-	u32 status_reg = *((__iomem u32*)dev->base + (DYPLO_REG_IRQ_STATUS >> 2));
-	printk(KERN_DEBUG "%s(status=0x%x)\n", __func__, status_reg);
-	
+	struct dyplo_config_dev *cfg_dev = dev_id;
+	struct dyplo_dev *dev = cfg_dev->parent;
+	int index;
+	u32 mask;
+
+	u32 write_status_reg = *(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_STATUS>>2));
+	u32 read_status_reg = *(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_STATUS>>2));
+	/* Acknowledge the interrupt by clearing all flags that we've seen */
+	if (write_status_reg)
+		*(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2)) = write_status_reg;
+	if (read_status_reg)
+		*(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2)) = read_status_reg;
+	printk(KERN_DEBUG "%s(status=0x%x 0x%x)\n", __func__,
+			write_status_reg, read_status_reg);
+	/* Trigger the associated wait queues */
+	for (mask=1, index=0; index < 32; ++index, mask <<= 1)
+	{
+		if (write_status_reg & mask)
+			wake_up_interruptible(&dev->fifo_devices[index].fifo_wait_queue);
+	}
+	for (mask=1, index=32; index < dev->number_of_fifo_devices; ++index, mask <<= 1)
+	{
+		if (read_status_reg & mask)
+			wake_up_interruptible(&dev->fifo_devices[index].fifo_wait_queue);
+	}
 	return IRQ_HANDLED;
 }
 
@@ -497,21 +524,29 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 {
 	int retval;
 	struct dyplo_dev *dev = cfg_dev->parent;
-	int index = dyplo_get_config_mem_offset(cfg_dev) / CONFIG_SIZE;
 	dev_t first_fifo_devt;
 	int fifo_index = 0;
 	int number_of_write_fifos;
 	int number_of_read_fifos;
 	int i;
 	struct device *device;
+	u32 config_id;
 
-	if (index != 1) /* For now, assume device 1 is the fifo interface */
+	config_id = *(cfg_dev->control_base + (DYPLO_REG_ID>>2));
+	if ((config_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) != DYPLO_REG_ID_PRODUCT_TOPIC_CPU)
 		return 0;
 
 	if (dev->number_of_fifo_devices) {
 		dev_err(&pdev->dev, "Fifo's already registered\n");
 		return -EBUSY;
 	}
+
+	dev->irq = platform_get_irq(pdev, 0);
+	if (dev->irq < 0) {
+		dev_err(&pdev->dev, "IRQ resource missing\n");
+		return -ENOENT;
+	}
+	
 	dev->number_of_fifo_devices = CONFIG_SIZE / FIFO_MEMORY_SIZE;
 	dev->fifo_devices = devm_kzalloc(&pdev->dev,
 		dev->number_of_fifo_devices * sizeof(struct dyplo_fifo_dev),
@@ -585,8 +620,17 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		++fifo_index;
 	}
 
+	/* Connect IRQ with this cfg_dev */
+	retval = request_irq(dev->irq, dyplo_isr, 0, pdev->name, cfg_dev);
+	if (retval) {
+		dev_err(&pdev->dev, "Cannot claim IRQ\n");
+		goto failed_request_irq;
+	}
+	dev->fifo_config_device = cfg_dev;
+
 	return 0;
 
+failed_request_irq:
 failed_device_create:
 	while (fifo_index) {
 		device_destroy(dev->class, first_fifo_devt + fifo_index);
@@ -607,6 +651,7 @@ static int dyplo_probe(struct platform_device *pdev)
 	dev_t devt;
 	int retval;
 	int device_index;
+	u32 control_id;
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
@@ -614,17 +659,19 @@ static int dyplo_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, dev);
 	sema_init(&dev->fop_sem, 1);
 
-	dev->irq = platform_get_irq(pdev, 0);
-	if (dev->irq < 0) {
-		dev_err(&pdev->dev, "IRQ resource missing\n");
-		return -ENOENT;
-	}
-
 	dev->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	dev->base = devm_request_and_ioremap(&pdev->dev, dev->mem);
 	if (!dev->base) {
 		dev_err(&pdev->dev, "Failed to map device memory\n");
 		return -ENXIO;
+	}
+
+	control_id = *(dev->base + (DYPLO_REG_ID>>2));
+	if ((control_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) !=
+			DYPLO_REG_ID_PRODUCT_TOPIC_CONTROL)
+	{
+		dev_err(&pdev->dev, "Bad device ID: 0x%x\n", control_id);
+		return -EINVAL;
 	}
 
 	/* Each logic block takes 64k address space, so the number of
@@ -646,12 +693,6 @@ static int dyplo_probe(struct platform_device *pdev)
 	if (retval < 0)
 		return retval;
 	dev->devt = devt;
-
-	retval = request_irq(dev->irq, dyplo_isr, 0, pdev->name, dev);
-	if (retval) {
-		dev_err(&pdev->dev, "Cannot claim IRQ\n");
-		goto failed_request_irq;
-	}
 
 	cdev_init(&dev->cdev_control, &dyplo_ctl_fops);
 	dev->cdev_control.owner = THIS_MODULE;
@@ -691,10 +732,10 @@ static int dyplo_probe(struct platform_device *pdev)
 		struct dyplo_config_dev* cfg_dev = 
 				&dev->config_devices[device_index];
 		cfg_dev->parent = dev;
-		cfg_dev->base = 
-			((char*)dev->base + (CONFIG_SIZE * device_index));
+		cfg_dev->base =
+			(dev->base + ((CONFIG_SIZE>>2) * device_index));
 		cfg_dev->control_base =
-			((char*)dev->base + (DYPLO_NODE_REG_SIZE * (device_index + 1)));
+			(dev->base + ((DYPLO_NODE_REG_SIZE>>2) * (device_index + 1)));
 		device = device_create(dev->class, &pdev->dev,
 			devt + 1 + device_index, 
 			cfg_dev, DRIVER_CONFIG_NAME, device_index);
@@ -721,12 +762,12 @@ failed_device_create_cfg:
 		device_destroy(dev->class, dev->devt + 1 + device_index);
 		--device_index;
 	}
+	if (dev->fifo_config_device)
+		free_irq(dev->irq, dev->fifo_config_device);
 failed_device_create:
 	class_destroy(dev->class);
 failed_class:
 failed_cdev:
-	free_irq(dev->irq, dev);
-failed_request_irq:
 	unregister_chrdev_region(devt, dev->number_of_config_devices + 1);
 	return retval;
 }
@@ -745,7 +786,8 @@ static int dyplo_remove(struct platform_device *pdev)
 		device_destroy(dev->class, dev->devt + i);
 	class_destroy(dev->class);
 	unregister_chrdev_region(dev->devt, 1 + dev->number_of_config_devices + dev->number_of_fifo_devices);
-	free_irq(dev->irq, dev);
+	if (dev->fifo_config_device)
+		free_irq(dev->irq, dev->fifo_config_device);
 	return 0;
 }
 

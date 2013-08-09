@@ -13,10 +13,10 @@
 #include <linux/sched.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
+#include <linux/poll.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include "dyplo.h"
-
 /* Try to keep the following statement on line 21 */
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Systems");
@@ -206,7 +206,7 @@ static struct file_operations dyplo_ctl_fops =
 static int dyplo_cfg_open(struct inode *inode, struct file *filp)
 {
 	struct dyplo_dev *dev =  container_of(inode->i_cdev, struct dyplo_dev, cdev_config);
-	int index = iminor(inode);
+	int index = iminor(inode) - 1;
 	struct dyplo_config_dev *cfg_dev = &dev->config_devices[index];
 	int status = 0;
 	mode_t rw_mode = filp->f_mode & (FMODE_READ | FMODE_WRITE);
@@ -417,11 +417,26 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 	return status;
 }
 
+static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
+{
+	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	unsigned int mask = 0;
+
+	//down(&dev->pps.fop_sem); /* Guard to ensure consistency with read() */
+	if (dyplo_fifo_read_level(fifo_dev))
+			mask |= (POLLIN | POLLRDNORM);
+	poll_wait(filp, &fifo_dev->fifo_wait_queue,  wait);
+	//up(&dev->pps.fop_sem);
+
+	return mask;
+}
+
 static struct file_operations dyplo_fifo_read_fops =
 {
 	.owner = THIS_MODULE,
 	.read = dyplo_fifo_read_read,
 	.llseek = no_llseek,
+	.poll = dyplo_fifo_read_poll,
 	.open = dyplo_fifo_read_open,
 	.release = dyplo_fifo_read_release,
 };
@@ -480,9 +495,24 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	return status;
 }
 
+static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
+{
+	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	unsigned int mask = 0;
+
+	//down(&dev->pps.fop_sem); /* Guard to ensure consistency with write() */
+	if (dyplo_fifo_write_level(fifo_dev))
+			mask |= (POLLOUT | POLLWRNORM);
+	poll_wait(filp, &fifo_dev->fifo_wait_queue,  wait);
+	//up(&dev->pps.fop_sem);
+
+	return mask;
+}
+
 static struct file_operations dyplo_fifo_write_fops =
 {
 	.write = dyplo_fifo_write_write,
+	.poll = dyplo_fifo_write_poll,
 	.llseek = no_llseek,
 	.open = dyplo_fifo_write_open,
 	.release = dyplo_fifo_write_release,
@@ -734,7 +764,7 @@ static int dyplo_probe(struct platform_device *pdev)
 				&dev->config_devices[device_index];
 		cfg_dev->parent = dev;
 		cfg_dev->base =
-			(dev->base + ((CONFIG_SIZE>>2) * device_index));
+			(dev->base + ((CONFIG_SIZE>>2) * (device_index + 1)));
 		cfg_dev->control_base =
 			(dev->base + ((DYPLO_NODE_REG_SIZE>>2) * (device_index + 1)));
 		device = device_create(dev->class, &pdev->dev,

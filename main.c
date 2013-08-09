@@ -590,6 +590,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 				&dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
 		fifo_dev->index = fifo_index;
+		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
 		device = device_create(dev->class, &pdev->dev,
 			first_fifo_devt + fifo_index, 
 			fifo_dev, DRIVER_FIFO_WRITE_NAME, i);

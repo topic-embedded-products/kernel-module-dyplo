@@ -34,10 +34,10 @@
 #define DYPLO_REG_FIFO_WRITE_IRQ_STATUS	0x44
 #define DYPLO_REG_FIFO_WRITE_IRQ_SET	0x48
 #define DYPLO_REG_FIFO_WRITE_IRQ_CLR	0x4C
-#define DYPLO_REG_FIFO_READ_IRQ_MASK	0x40
-#define DYPLO_REG_FIFO_READ_IRQ_STATUS	0x44
-#define DYPLO_REG_FIFO_READ_IRQ_SET	0x48
-#define DYPLO_REG_FIFO_READ_IRQ_CLR	0x4C
+#define DYPLO_REG_FIFO_READ_IRQ_MASK	0x50
+#define DYPLO_REG_FIFO_READ_IRQ_STATUS	0x54
+#define DYPLO_REG_FIFO_READ_IRQ_SET	0x58
+#define DYPLO_REG_FIFO_READ_IRQ_CLR	0x5C
 
 /* Base address of the source registers */
 #define DYPLO_REG_FIFO_READ_SOURCE_BASE	0x080
@@ -47,7 +47,11 @@
 #define DYPLO_REG_FIFO_READ_LEVEL_BASE	0x180
 /* Base address of the source registers */
 #define DYPLO_REG_FIFO_WRITE_SOURCE_BASE	0x200
-/* Read level threshold */
+/* Write level threshold */
 #define DYPLO_REG_FIFO_WRITE_THD_BASE	0x280
 /* Actual fill level */
 #define DYPLO_REG_FIFO_WRITE_LEVEL_BASE	0x300
+
+/* Queue sizes in words */
+#define DYPLO_FIFO_WRITE_SIZE	32
+#define DYPLO_FIFO_READ_SIZE	128

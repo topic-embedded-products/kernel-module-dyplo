@@ -1,4 +1,4 @@
-#define DEBUG
+//#define DEBUG
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -70,12 +70,6 @@ static unsigned int dyplo_get_config_mem_offset(struct dyplo_config_dev *cfg_dev
 {
 	return ((char*)cfg_dev->base - (char*)cfg_dev->parent->base);
 }
-
-static unsigned int dyplo_to_physical_address(struct dyplo_dev* dev, void* ptr)
-{
-	return ((char*)ptr - (char*)dev->base) + dev->mem->start;
-}
-
 
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
 {
@@ -367,11 +361,26 @@ static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index - 32; /* Read devices start at 32 */
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
-	pr_debug("%s index=%d @ %p\n", __func__, index,
+	int result = *(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
+	pr_debug("%s index=%d result=%d @ %p\n", __func__, index, result,
 		(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index));
-	return *(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
+	return result;
 }
 
+static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
+{
+	int index = fifo_dev->index - 32; /* Read devices start at 32 */;
+	int __iomem *control_base =
+		fifo_dev->config_parent->control_base;
+	if (thd > DYPLO_FIFO_READ_SIZE/2)
+		thd = DYPLO_FIFO_READ_SIZE/2;
+	if (thd)
+		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
+	*(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index) = thd;
+	*(control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2)) = BIT(index);
+	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, 
+		*(control_base + (DYPLO_REG_FIFO_READ_IRQ_MASK>>2)));
+}
 
 static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 {
@@ -393,27 +402,63 @@ static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-	int status;
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
+	int status = 0;
+	size_t len = 0;
 
-	int words_available = dyplo_fifo_read_level(fifo_dev);
-
-	pr_debug("%s(%d) fifo_level=%d @ %p\n", __func__, count, words_available, mapped_memory);
-
-	if (count > (words_available<<2))
-		count = (words_available<<2);
-
-	if (copy_to_user(buf, mapped_memory, count))
+	pr_debug("%s(%d)\n", __func__, count);
+	count &= ~0x03; /* Align to words */
+	while (count)
 	{
-		status = -EFAULT;
-	}
-	else
-	{
-		status = count;
-		*f_pos += count;
+		int words_available;
+		size_t bytes;
+		if (filp->f_flags & O_NONBLOCK) {
+			words_available = dyplo_fifo_read_level(fifo_dev);
+			if (!words_available) {
+				/* Non-blocking IO, return what we have */
+				if (len)
+					break;
+				/* nothing copied yet, notify caller */
+				status = -EAGAIN;
+				goto error;
+			}
+		}
+		else {
+			DEFINE_WAIT(wait);
+			for (;;) {
+				prepare_to_wait(&fifo_dev->fifo_wait_queue, &wait, TASK_INTERRUPTIBLE);
+				words_available = dyplo_fifo_read_level(fifo_dev);
+				if (words_available)
+					break; /* Done waiting */
+				if (!signal_pending(current)) {
+					dyplo_fifo_read_enable_interrupt(fifo_dev, count >> 2);
+					schedule();
+					continue;
+				}
+				status = -ERESTARTSYS;
+				break;
+			}
+			finish_wait(&fifo_dev->fifo_wait_queue, &wait);
+			if (status)
+				goto error;
+		}
+		bytes = words_available << 2;
+		if (count < bytes)
+			bytes = count;
+		pr_debug("%s copy_to_user %p (%d)\n", __func__, mapped_memory, bytes);
+		if (unlikely(copy_to_user(buf, mapped_memory, bytes))) {
+			status = -EFAULT;
+			goto error;
+		}
+		count -= bytes;
+		len += bytes;
+		buf += bytes;
 	}
 
+	status = len;
+	*f_pos += len;
+error:
 	return status;
 }
 
@@ -446,9 +491,25 @@ static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index;
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
-	pr_debug("%s index=%d @ %p\n", __func__, index,
-		(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index));
-	return *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
+	int result = *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
+	//pr_debug("%s index=%d value=%d\n", __func__, index, result);
+	if (result >= DYPLO_FIFO_WRITE_SIZE)
+		return 0;
+	return DYPLO_FIFO_WRITE_SIZE - result;  /* @ */
+}
+
+static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
+{
+	int index = fifo_dev->index;
+	__iomem int *control_base =
+		fifo_dev->config_parent->control_base;
+	if (thd > DYPLO_FIFO_WRITE_SIZE/2)
+		thd = DYPLO_FIFO_WRITE_SIZE/2;
+	else
+		thd = DYPLO_FIFO_WRITE_SIZE - thd; /* @ */
+	*(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index) = thd;
+	*(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2)) = BIT(index);
+	//pr_debug("%s index=%d mask=%x\n", __func__, index, *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2)));
 }
 
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
@@ -471,27 +532,63 @@ static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf, size_t count,
 	loff_t *f_pos)
 {
-	int status;
+	int status = 0;
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
+	size_t len = 0;
 
-	int words_available = dyplo_fifo_write_level(fifo_dev);
-
-	pr_debug("%s(%d) fifo_level=%d @ %p\n", __func__, count, words_available, mapped_memory);
-
-	if (count > FIFO_MEMORY_SIZE)
-		count = FIFO_MEMORY_SIZE;
-
-	if (copy_from_user(mapped_memory, buf, count))
+	count &= ~0x03; /* Align to words */
+	
+	while (count)
 	{
-		status = -EFAULT;
-	}
-	else
-	{
-		status = count;
-		*f_pos += count;
+		int words_available;
+		size_t bytes;
+		if (filp->f_flags & O_NONBLOCK) {
+			words_available = dyplo_fifo_write_level(fifo_dev);
+			if (!words_available) {
+				/* Non-blocking IO, return what we have */
+				if (len)
+					break;
+				/* nothing copied yet, notify caller */
+				status = -EAGAIN;
+				goto error;
+			}
+		}
+		else {
+			DEFINE_WAIT(wait);
+			for (;;) {
+				prepare_to_wait(&fifo_dev->fifo_wait_queue, &wait, TASK_INTERRUPTIBLE);
+				words_available = dyplo_fifo_write_level(fifo_dev);
+				if (words_available)
+					break; /* Done waiting */
+				if (!signal_pending(current)) {
+					dyplo_fifo_write_enable_interrupt(fifo_dev, count >> 2);
+					schedule();
+					continue;
+				}
+				status = -ERESTARTSYS;
+				break;
+			}
+			finish_wait(&fifo_dev->fifo_wait_queue, &wait);
+			if (status)
+				goto error;
+		}
+		bytes = words_available << 2;
+		if (count < bytes)
+			bytes = count;
+		pr_debug("%s copy_from_user %p (%d)\n", __func__, mapped_memory, bytes);
+		if (unlikely(copy_from_user(mapped_memory, buf, bytes))) {
+			status = -EFAULT;
+			goto error;
+		}
+		count -= bytes;
+		len += bytes;
+		buf += bytes;
 	}
 
+	status = len;
+	*f_pos += len;
+error:
 	return status;
 }
 
@@ -534,7 +631,7 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 		*(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2)) = write_status_reg;
 	if (read_status_reg)
 		*(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2)) = read_status_reg;
-	printk(KERN_DEBUG "%s(status=0x%x 0x%x)\n", __func__,
+	pr_debug(KERN_DEBUG "%s(status=0x%x 0x%x)\n", __func__,
 			write_status_reg, read_status_reg);
 	/* Trigger the associated wait queues */
 	for (mask=1, index=0; index < 32; ++index, mask <<= 1)

@@ -447,19 +447,25 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 			if (status)
 				goto error;
 		}
-		bytes = words_available << 2;
-		if (bytes > FIFO_MEMORY_SIZE)
-			bytes = FIFO_MEMORY_SIZE;
-		if (count < bytes)
-			bytes = count;
-		pr_debug("%s copy_to_user %p (%d)\n", __func__, mapped_memory, bytes);
-		if (unlikely(__copy_to_user(buf, mapped_memory, bytes))) {
-			status = -EFAULT;
-			goto error;
+		do {
+			bytes = words_available << 2;
+			if (bytes > DYPLO_FIFO_READ_MAX_BURST_SIZE)
+				bytes = DYPLO_FIFO_READ_MAX_BURST_SIZE;
+			if (count < bytes)
+				bytes = count;
+			pr_debug("%s copy_to_user %p (%d)\n", __func__, mapped_memory, bytes);
+			if (unlikely(__copy_to_user(buf, mapped_memory, bytes))) {
+				status = -EFAULT;
+				goto error;
+			}
+			len += bytes;
+			buf += bytes;
+			count -= bytes;
+			if (!count)
+				break;
+			words_available -= bytes >> 2;
 		}
-		count -= bytes;
-		len += bytes;
-		buf += bytes;
+		while (words_available);
 	}
 
 	status = len;
@@ -502,7 +508,7 @@ static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
 	u32 result = *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
-	pr_debug("%s index=%d value=0x%x\n", __func__, index, result);
+	pr_debug("%s index=%d value=0x%x (%d free)\n", __func__, index, result, DYPLO_FIFO_WRITE_SIZE-(result & 0xFFFF));
 	result &= 0xFFFF; /* Only lower 16 bits */
 	if (result >= DYPLO_FIFO_WRITE_SIZE)
 		return 0;
@@ -586,19 +592,26 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 			if (status)
 				goto error;
 		}
-		bytes = words_available << 2;
-		if (bytes > FIFO_MEMORY_SIZE)
-			bytes = FIFO_MEMORY_SIZE;
-		if (count < bytes)
-			bytes = count;
-		pr_debug("%s copy_from_user %p (%d)\n", __func__, mapped_memory, bytes);
-		if (unlikely(__copy_from_user(mapped_memory, buf, bytes))) {
-			status = -EFAULT;
-			goto error;
+		do
+		{
+			bytes = words_available << 2;
+			if (bytes > DYPLO_FIFO_WRITE_MAX_BURST_SIZE)
+				bytes = DYPLO_FIFO_WRITE_MAX_BURST_SIZE;
+			if (count < bytes)
+				bytes = count;
+			pr_debug("%s copy_from_user %p (%d)\n", __func__, mapped_memory, bytes);
+			if (unlikely(__copy_from_user(mapped_memory, buf, bytes))) {
+				status = -EFAULT;
+				goto error;
+			}
+			len += bytes;
+			buf += bytes;
+			count -= bytes;
+			if (!count)
+				break;
+			words_available -= bytes >> 2;
 		}
-		count -= bytes;
-		len += bytes;
-		buf += bytes;
+		while (words_available);
 	}
 
 	status = len;

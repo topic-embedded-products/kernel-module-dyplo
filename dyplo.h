@@ -53,5 +53,10 @@
 #define DYPLO_REG_FIFO_WRITE_LEVEL_BASE	0x300
 
 /* Queue sizes in words */
-#define DYPLO_FIFO_WRITE_SIZE	256
+#define DYPLO_FIFO_WRITE_SIZE	255
 #define DYPLO_FIFO_READ_SIZE	1024
+
+/* Hack: Write with burst doesn't work, limit to <32 bytes per call */
+#define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	28
+/* Reading does not suffer from this problem it appears */
+#define DYPLO_FIFO_READ_MAX_BURST_SIZE FIFO_MEMORY_SIZE

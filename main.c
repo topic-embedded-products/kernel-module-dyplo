@@ -1,4 +1,4 @@
-//#define DEBUG
+#define DEBUG
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -409,6 +409,10 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 
 	pr_debug("%s(%d)\n", __func__, count);
 	count &= ~0x03; /* Align to words */
+	
+	if (!access_ok(VERIFY_WRITE, buf, count))
+		return -EFAULT;
+
 	while (count)
 	{
 		int words_available;
@@ -444,10 +448,12 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 				goto error;
 		}
 		bytes = words_available << 2;
+		if (bytes > FIFO_MEMORY_SIZE)
+			bytes = FIFO_MEMORY_SIZE;
 		if (count < bytes)
 			bytes = count;
 		pr_debug("%s copy_to_user %p (%d)\n", __func__, mapped_memory, bytes);
-		if (unlikely(copy_to_user(buf, mapped_memory, bytes))) {
+		if (unlikely(__copy_to_user(buf, mapped_memory, bytes))) {
 			status = -EFAULT;
 			goto error;
 		}
@@ -469,7 +475,11 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 
 	//down(&dev->pps.fop_sem); /* Guard to ensure consistency with read() */
 	if (dyplo_fifo_read_level(fifo_dev))
-			mask |= (POLLIN | POLLRDNORM);
+			mask |= (POLLIN | POLLRDNORM); /* Data available */
+	else
+			/* Set IRQ to occur ASAP. May be good to have an ioctl
+			 * to increase this limit */
+			dyplo_fifo_read_enable_interrupt(fifo_dev, 1);
 	poll_wait(filp, &fifo_dev->fifo_wait_queue,  wait);
 	//up(&dev->pps.fop_sem);
 
@@ -491,8 +501,9 @@ static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index;
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
-	int result = *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
-	//pr_debug("%s index=%d value=%d\n", __func__, index, result);
+	u32 result = *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
+	pr_debug("%s index=%d value=0x%x\n", __func__, index, result);
+	result &= 0xFFFF; /* Only lower 16 bits */
 	if (result >= DYPLO_FIFO_WRITE_SIZE)
 		return 0;
 	return DYPLO_FIFO_WRITE_SIZE - result;  /* @ */
@@ -509,7 +520,7 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 		thd = DYPLO_FIFO_WRITE_SIZE - thd; /* @ */
 	*(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index) = thd;
 	*(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2)) = BIT(index);
-	//pr_debug("%s index=%d mask=%x\n", __func__, index, *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2)));
+	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2)));
 }
 
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
@@ -538,7 +549,9 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	size_t len = 0;
 
 	count &= ~0x03; /* Align to words */
-	
+	if (!access_ok(VERIFY_READ, buf, count))
+		return -EFAULT;
+
 	while (count)
 	{
 		int words_available;
@@ -574,10 +587,12 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 				goto error;
 		}
 		bytes = words_available << 2;
+		if (bytes > FIFO_MEMORY_SIZE)
+			bytes = FIFO_MEMORY_SIZE;
 		if (count < bytes)
 			bytes = count;
 		pr_debug("%s copy_from_user %p (%d)\n", __func__, mapped_memory, bytes);
-		if (unlikely(copy_from_user(mapped_memory, buf, bytes))) {
+		if (unlikely(__copy_from_user(mapped_memory, buf, bytes))) {
 			status = -EFAULT;
 			goto error;
 		}
@@ -600,6 +615,9 @@ static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
 	//down(&dev->pps.fop_sem); /* Guard to ensure consistency with write() */
 	if (dyplo_fifo_write_level(fifo_dev))
 			mask |= (POLLOUT | POLLWRNORM);
+	else
+			/* Wait for buffer half-empty */
+			dyplo_fifo_write_enable_interrupt(fifo_dev, DYPLO_FIFO_WRITE_SIZE / 2);
 	poll_wait(filp, &fifo_dev->fifo_wait_queue,  wait);
 	//up(&dev->pps.fop_sem);
 

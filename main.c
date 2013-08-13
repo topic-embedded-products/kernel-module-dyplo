@@ -42,8 +42,9 @@ struct dyplo_config_dev
 struct dyplo_fifo_dev
 {
 	struct dyplo_config_dev* config_parent;
-	int index;
 	wait_queue_head_t fifo_wait_queue; /* So the IRQ handler can notify waiting threads */
+	int index;
+	bool is_open;
 };
 
 struct dyplo_dev
@@ -384,18 +385,30 @@ static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, in
 
 static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 {
+	int result = 0;
 	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_read);
 	int index = iminor(inode) - dev->number_of_config_devices - 1;
 	struct dyplo_fifo_dev *fifo_dev = &dev->fifo_devices[index];
 
 	if (filp->f_mode & FMODE_WRITE) /* read-only device */
 		return -EINVAL;
+	if (down_interruptible(&dev->fop_sem))
+		return -ERESTARTSYS;
+	if (fifo_dev->is_open) {
+		result = -EBUSY;
+		goto error;
+	}
+	fifo_dev->is_open = true;
 	filp->private_data = fifo_dev;
-	return 0;
+error:
+	up(&dev->fop_sem);
+	return result;
 }
 
 static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 {
+	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	fifo_dev->is_open = false;
 	return 0;
 }
 
@@ -531,18 +544,31 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 {
+	int result = 0;
 	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_write);
 	int index = iminor(inode) - dev->number_of_config_devices - 1;
 	struct dyplo_fifo_dev *fifo_dev = &dev->fifo_devices[index];
 	
 	if (filp->f_mode & FMODE_READ) /* write-only device */
 		return -EINVAL;
+
+	if (down_interruptible(&dev->fop_sem))
+		return -ERESTARTSYS;
+	if (fifo_dev->is_open) {
+		result = -EBUSY;
+		goto error;
+	}
+	fifo_dev->is_open = true;
 	filp->private_data = fifo_dev;
-	return 0;
+error:
+	up(&dev->fop_sem);
+	return result;
 }
 
 static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 {
+	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	fifo_dev->is_open = false;
 	return 0;
 }
 

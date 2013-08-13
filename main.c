@@ -106,13 +106,13 @@ static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
 	size_t offset;
 
 	/* EOF when past our area */
-	if (*f_pos >= CONFIG_SIZE)
+	if (*f_pos >= DYPLO_CONFIG_SIZE)
 		return 0;
 	
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
-	if ((offset + count) > CONFIG_SIZE)
-		count = CONFIG_SIZE - offset;
+	if ((offset + count) > DYPLO_CONFIG_SIZE)
+		count = DYPLO_CONFIG_SIZE - offset;
 
 	if (copy_to_user(buf, mapped_memory + (offset >> 2), count))
 	{
@@ -141,14 +141,14 @@ loff_t dyplo_ctl_llseek(struct file *filp, loff_t off, int whence)
         break;
 
       case 2: /* SEEK_END */
-        newpos = CONFIG_SIZE + off;
+        newpos = DYPLO_CONFIG_SIZE + off;
         break;
 
       default: /* can't happen */
         return -EINVAL;
     }
     if (newpos < 0) return -EINVAL;
-    if (newpos > CONFIG_SIZE) return -EINVAL;
+    if (newpos > DYPLO_CONFIG_SIZE) return -EINVAL;
     filp->f_pos = newpos;
     return newpos;
 }
@@ -373,13 +373,13 @@ static ssize_t dyplo_cfg_read(struct file *filp, char __user *buf, size_t count,
 	size_t offset;
 
 	/* EOF when past our area */
-	if (*f_pos >= CONFIG_SIZE)
+	if (*f_pos >= DYPLO_CONFIG_SIZE)
 		return 0;
 	
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
-	if ((offset + count) > CONFIG_SIZE)
-		count = CONFIG_SIZE - offset;
+	if ((offset + count) > DYPLO_CONFIG_SIZE)
+		count = DYPLO_CONFIG_SIZE - offset;
 
 	if (copy_to_user(buf, mapped_memory + (offset >> 2), count))
 	{
@@ -403,13 +403,13 @@ static ssize_t dyplo_cfg_write (struct file *filp, const char __user *buf, size_
 	size_t offset;
 
 	/* EOF when past our area */
-	if (*f_pos >= CONFIG_SIZE)
+	if (*f_pos >= DYPLO_CONFIG_SIZE)
 		return 0;
 	
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
-	if ((offset + count) > CONFIG_SIZE)
-		count = CONFIG_SIZE - offset;
+	if ((offset + count) > DYPLO_CONFIG_SIZE)
+		count = DYPLO_CONFIG_SIZE - offset;
 
 	if (copy_from_user(mapped_memory + (offset >> 2), buf, count))
 	{
@@ -438,14 +438,14 @@ loff_t dyplo_cfg_llseek(struct file *filp, loff_t off, int whence)
         break;
 
       case 2: /* SEEK_END */
-        newpos = CONFIG_SIZE + off;
+        newpos = DYPLO_CONFIG_SIZE + off;
         break;
 
       default: /* can't happen */
         return -EINVAL;
     }
     if (newpos < 0) return -EINVAL;
-    if (newpos > CONFIG_SIZE) return -EINVAL;
+    if (newpos > DYPLO_CONFIG_SIZE) return -EINVAL;
     filp->f_pos = newpos;
     return newpos;
 }
@@ -460,7 +460,7 @@ static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 		dyplo_get_config_mem_offset(cfg_dev) +
 		off;
 	unsigned long vsize = vma->vm_end - vma->vm_start;
-	if (vsize > (CONFIG_SIZE - off))
+	if (vsize > (DYPLO_CONFIG_SIZE - off))
 		return -EINVAL; /*  spans too high */
 
 	if (remap_pfn_range(vma, vma->vm_start, physical, vsize, vma->vm_page_prot))
@@ -485,7 +485,7 @@ static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
 {
 	struct dyplo_config_dev *cfg_dev = fifo_dev->config_parent;
 	return
-		cfg_dev->base + (fifo_dev->index * (FIFO_MEMORY_SIZE>>2));
+		cfg_dev->base + (fifo_dev->index * (DYPLO_FIFO_MEMORY_SIZE>>2));
 }
 
 static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
@@ -862,7 +862,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		return -ENOENT;
 	}
 	
-	dev->number_of_fifo_devices = CONFIG_SIZE / FIFO_MEMORY_SIZE;
+	dev->number_of_fifo_devices = DYPLO_CONFIG_SIZE / DYPLO_FIFO_MEMORY_SIZE;
 	dev->fifo_devices = devm_kzalloc(&pdev->dev,
 		dev->number_of_fifo_devices * sizeof(struct dyplo_fifo_dev),
 		GFP_KERNEL);
@@ -995,7 +995,7 @@ static int dyplo_probe(struct platform_device *pdev)
 	 * generic control (which is accomplished by "end" being inclusive).
 	 * */
 	dev->number_of_config_devices =
-		(dev->mem->end - dev->mem->start) / CONFIG_SIZE;
+		(dev->mem->end - dev->mem->start) / DYPLO_CONFIG_SIZE;
 	dev->config_devices = devm_kzalloc(&pdev->dev,
 		dev->number_of_config_devices * sizeof(struct dyplo_config_dev),
 		GFP_KERNEL);
@@ -1049,7 +1049,7 @@ static int dyplo_probe(struct platform_device *pdev)
 				&dev->config_devices[device_index];
 		cfg_dev->parent = dev;
 		cfg_dev->base =
-			(dev->base + ((CONFIG_SIZE>>2) * (device_index + 1)));
+			(dev->base + ((DYPLO_CONFIG_SIZE>>2) * (device_index + 1)));
 		cfg_dev->control_base =
 			(dev->base + ((DYPLO_NODE_REG_SIZE>>2) * (device_index + 1)));
 		device = device_create(dev->class, &pdev->dev,

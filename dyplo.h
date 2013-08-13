@@ -1,7 +1,7 @@
 /* Memory range for a processing block is 64k */
-#define CONFIG_SIZE	(64*1024)
+#define DYPLO_CONFIG_SIZE	(64*1024)
 /* Each FIFO occupies 256 words address range */
-#define FIFO_MEMORY_SIZE (4*256)
+#define DYPLO_FIFO_MEMORY_SIZE (4*256)
 
 /* memory map offsets */
 #define DYPLO_REG_ID	0x00
@@ -59,7 +59,7 @@
 /* Hack: Write with burst doesn't work, limit to <32 bytes per call */
 #define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	28
 /* Reading does not suffer from this problem it appears */
-#define DYPLO_FIFO_READ_MAX_BURST_SIZE FIFO_MEMORY_SIZE
+#define DYPLO_FIFO_READ_MAX_BURST_SIZE DYPLO_FIFO_MEMORY_SIZE
 
 /* ioctl values for dyploctl device, set and get routing tables */
 struct dyplo_route_t  {

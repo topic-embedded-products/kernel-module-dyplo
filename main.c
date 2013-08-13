@@ -172,10 +172,141 @@ static int dyplo_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
+static void dyplo_ctl_route_remove_src(struct dyplo_config_dev *cfg_dev, int queue)
+{
+	u32 route = *(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + queue);
+	const int index_cfg_dst = ((route >> 5) & 0x1F) - 1;
+	if (index_cfg_dst >= 0)
+	{
+		const int index_queue_dst = (route) & 0x1F;
+		pr_debug("%s(%d) remove %d[%d]\n", __func__, queue, index_cfg_dst, index_queue_dst);
+		*(cfg_dev->parent->config_devices[index_cfg_dst].control_base +
+			(DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) + index_queue_dst) = 0;
+	}
+}
+
+static void dyplo_ctl_route_remove_dst(struct dyplo_config_dev *cfg_dev, int queue)
+{
+	u32 route = *(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) + queue);
+	const int index_cfg_src = ((route >> 5) & 0x1F) - 1;
+	if (index_cfg_src >= 0)
+	{
+		const int index_queue_src = (route) & 0x1F;
+		pr_debug("%s(%d) remove %d[%d]\n", __func__, queue, index_cfg_src, index_queue_src);
+		*(cfg_dev->parent->config_devices[index_cfg_src].control_base +
+			(DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + index_queue_src) = 0;
+	}
+}
+
+static int dyplo_ctl_route_add(struct dyplo_dev *dev, u32 route)
+{
+	const int index_cfg_src = (route >> 5) & 0x1F;
+	const int index_queue_src = route & 0x1F;
+	const int index_cfg_dst = (route >> 21) & 0x1F;
+	const int index_queue_dst = (route >> 16) & 0x1F;
+	pr_debug("%s(0x%x) %d,%d->%d,%d\n", __func__, route,
+		index_cfg_src, index_queue_src, index_cfg_dst, index_queue_dst);
+	if ((index_cfg_src >= dev->number_of_config_devices) ||
+	    (index_cfg_dst >= dev->number_of_config_devices))
+	    return -EINVAL;
+	/* Remove existing routes using the same endpoints */
+	dyplo_ctl_route_remove_src(&dev->config_devices[index_cfg_src], index_queue_src);
+	dyplo_ctl_route_remove_dst(&dev->config_devices[index_cfg_dst], index_queue_dst);
+	/* Setup route. The PL assumes that "0" is the control node, hence
+	 * the "+1" in config node indices */
+	*(dev->config_devices[index_cfg_src].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + index_queue_src) = 
+		((index_cfg_dst+1) << 5) | index_queue_dst;
+	*(dev->config_devices[index_cfg_dst].control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) + index_queue_dst) = 
+		((index_cfg_src+1) << 5) | index_queue_src;
+	return 0;
+}
+
+static int dyplo_ctl_route_add_from_user(struct dyplo_dev *dev, const struct dyplo_route_t __user *uroutes)
+{
+	int status = 0;
+	struct dyplo_route_t routes;
+	if (copy_from_user(&routes, uroutes, sizeof(routes)))
+		return -EFAULT;
+	while (routes.n_routes--)
+	{
+		unsigned int route;
+		status = get_user(route, routes.proutes);
+		if (status)
+			break;
+		status = dyplo_ctl_route_add(dev, route);
+		if (status)
+			break;
+		++routes.proutes;
+	}
+	return status;
+}
+
+static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_route_t __user *uroutes)
+{
+	int status = 0;
+	int nr = 0;
+	int ctl_index;
+	int queue_index;
+	struct dyplo_route_t routes;
+	if (copy_from_user(&routes, uroutes, sizeof(routes)))
+		return -EFAULT;
+	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
+	{
+		int __iomem *ctl_base = dev->config_devices[ctl_index].control_base;
+		for (queue_index = 0; queue_index < 32; ++queue_index)
+		{
+			unsigned int route = *(ctl_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + queue_index);
+			if (route)
+			{
+				if (nr >= routes.n_routes)
+					return nr; /* No room for more, quit */
+				route = (route << 16) | (ctl_index << 5) | queue_index;
+				status = put_user(route, routes.proutes + nr);
+				if (!status)
+					return status;
+				++nr;
+			}
+		}
+	}
+	return status ? status : nr; /* Return number of items found */
+}
+
 static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
 {
+	int status;
+
 	/* printk(KERN_DEBUG "%s(%x, %lx)\n", __func__, cmd, arg); */
-	return -ENOTTY;
+	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+		return -ENOTTY;
+	
+	/* Verify read/write access to user memory early on */
+	if (_IOC_DIR(cmd) & _IOC_READ) 	{
+		/* IOC and VERIFY use different perspectives, hence the "WRITE" and "READ" confusion */
+		if (unlikely(!access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd))))
+			return -EFAULT;
+	}
+	else if (_IOC_DIR(cmd) & _IOC_WRITE) {
+		if (unlikely(!access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd))))
+			return -EFAULT;
+	}
+
+	switch (_IOC_NR(cmd))
+	{
+		case DYPLO_IOC_ROUTE_SET: /* Set routes. */
+			status = dyplo_ctl_route_add_from_user(dev, arg);
+			break;
+		case DYPLO_IOC_ROUTE_GET: /* Get routes. */
+			status = dyplo_ctl_route_get_from_user(dev, arg);
+			break;
+		case DYPLO_IOC_ROUTE_TELL: /* Tell route: Adds a single route entry */
+			status = dyplo_ctl_route_add(dev, arg);
+			break;
+		default:
+			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%x).\n", _IOC_NR(cmd), arg);
+			status = -ENOTTY;
+	}
+
+	return status;
 }
 
 static long dyplo_ctl_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -360,7 +491,7 @@ static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
 static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 {
 	int index = fifo_dev->index - 32; /* Read devices start at 32 */
-	__iomem int *control_base =
+	int __iomem *control_base =
 		fifo_dev->config_parent->control_base;
 	int result = *(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
 	pr_debug("%s index=%d result=%d @ %p\n", __func__, index, result,
@@ -370,7 +501,7 @@ static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 
 static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
 {
-	int index = fifo_dev->index - 32; /* Read devices start at 32 */;
+	int index = fifo_dev->index - 32; /* Read devices start at 32 */
 	int __iomem *control_base =
 		fifo_dev->config_parent->control_base;
 	if (thd > DYPLO_FIFO_READ_SIZE/2)

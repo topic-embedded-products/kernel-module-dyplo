@@ -60,3 +60,21 @@
 #define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	28
 /* Reading does not suffer from this problem it appears */
 #define DYPLO_FIFO_READ_MAX_BURST_SIZE FIFO_MEMORY_SIZE
+
+/* ioctl values for dyploctl device, set and get routing tables */
+struct dyplo_route_t  {
+	unsigned int n_routes;
+	unsigned int* proutes;
+};
+
+#define DYPLO_IOC_MAGIC	'd'
+#define DYPLO_IOC_ROUTE_SET	0x01
+#define DYPLO_IOC_ROUTE_GET	0x02
+#define DYPLO_IOC_ROUTE_TELL	0x03
+/* S means "Set" through a ptr,
+ * T means "Tell", sets directly
+ * G means "Get" through a ptr
+ * Q means "Query", return value */
+#define DYPLO_IOCSROUTE   _IOW(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_SET, struct dyplo_route_t)
+#define DYPLO_IOCGROUTE   _IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_GET, struct dyplo_route_t)
+#define DYPLO_IOCTROUTE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_TELL)

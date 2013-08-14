@@ -820,7 +820,7 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 		*(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2)) = write_status_reg;
 	if (read_status_reg)
 		*(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2)) = read_status_reg;
-	pr_debug(KERN_DEBUG "%s(status=0x%x 0x%x)\n", __func__,
+	pr_debug("%s(status=0x%x 0x%x)\n", __func__,
 			write_status_reg, read_status_reg);
 	/* Trigger the associated wait queues */
 	for (mask=1, index=0; index < 32; ++index, mask <<= 1)

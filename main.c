@@ -258,11 +258,12 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 			unsigned int route = *(ctl_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + queue_index);
 			if (route)
 			{
+				pr_debug("%s: 0x%x\n", __func__, route);
 				if (nr >= routes.n_routes)
 					return nr; /* No room for more, quit */
 				route = (route << 16) | (ctl_index << 5) | queue_index;
 				status = put_user(route, routes.proutes + nr);
-				if (!status)
+				if (status)
 					return status;
 				++nr;
 			}

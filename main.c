@@ -406,7 +406,10 @@ static ssize_t dyplo_cfg_write (struct file *filp, const char __user *buf, size_
 	/* EOF when past our area */
 	if (*f_pos >= DYPLO_CONFIG_SIZE)
 		return 0;
-	
+
+	if (count < 4) /* Do not allow read or write below word size */
+		return -EINVAL;
+
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
 	if ((offset + count) > DYPLO_CONFIG_SIZE)
@@ -553,6 +556,10 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 	size_t len = 0;
 
 	pr_debug("%s(%d)\n", __func__, count);
+
+	if (count < 4) /* Do not allow read or write below word size */
+		return -EINVAL;
+
 	count &= ~0x03; /* Align to words */
 	
 	if (!access_ok(VERIFY_WRITE, buf, count))
@@ -711,6 +718,9 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
 	size_t len = 0;
+
+	if (count < 4) /* Do not allow read or write below word size */
+		return -EINVAL;
 
 	count &= ~0x03; /* Align to words */
 	if (!access_ok(VERIFY_READ, buf, count))

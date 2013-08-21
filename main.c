@@ -179,7 +179,7 @@ static void dyplo_ctl_route_remove_src(struct dyplo_config_dev *cfg_dev, int que
 	if (index_cfg_dst >= 0)
 	{
 		const int index_queue_dst = (route) & 0x1F;
-		pr_debug("%s(%d) remove %d[%d]\n", __func__, queue, index_cfg_dst, index_queue_dst);
+		pr_debug("%s(%d) route=%x remove %d[%d]\n", __func__, queue, route, index_cfg_dst, index_queue_dst);
 		*(cfg_dev->parent->config_devices[index_cfg_dst].control_base +
 			(DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) + index_queue_dst) = 0;
 	}
@@ -214,10 +214,21 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, u32 route)
 	dyplo_ctl_route_remove_dst(&dev->config_devices[index_cfg_dst], index_queue_dst);
 	/* Setup route. The PL assumes that "0" is the control node, hence
 	 * the "+1" in config node indices */
-	*(dev->config_devices[index_cfg_src].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + index_queue_src) = 
-		((index_cfg_dst+1) << 5) | index_queue_dst;
-	*(dev->config_devices[index_cfg_dst].control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) + index_queue_dst) = 
-		((index_cfg_src+1) << 5) | index_queue_src;
+	int __iomem* dst_control_addr =
+		dev->config_devices[index_cfg_src].control_base +
+		(DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) +
+		index_queue_src;
+	int __iomem* src_control_addr =
+		dev->config_devices[index_cfg_dst].control_base +
+		(DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) +
+		index_queue_dst;
+	*dst_control_addr = ((index_cfg_dst+1) << 5) | index_queue_dst;
+	pr_debug("%s (%d) @ %p: %x\n", __func__, index_cfg_src,
+		dst_control_addr, ((index_cfg_dst+1) << 5) | index_queue_dst);
+	*src_control_addr = ((index_cfg_src+1) << 5) | index_queue_src;
+	pr_debug("%s (%d) @ %p: %x\n", __func__, index_cfg_dst,
+		src_control_addr, ((index_cfg_src+1) << 5) | index_queue_src);
+		
 	return 0;
 }
 
@@ -252,24 +263,52 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 		return -EFAULT;
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
-		int __iomem *ctl_base = dev->config_devices[ctl_index].control_base;
+		int __iomem *ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < 32; ++queue_index)
 		{
-			unsigned int route = *(ctl_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + queue_index);
+			unsigned int route = ctl_route_base[queue_index];
 			if (route)
 			{
-				pr_debug("%s: 0x%x\n", __func__, route);
-				if (nr >= routes.n_routes)
-					return nr; /* No room for more, quit */
-				route = (route << 16) | (ctl_index << 5) | queue_index;
-				status = put_user(route, routes.proutes + nr);
-				if (status)
-					return status;
-				++nr;
+				int src_ctl_index = route >> 5;
+				if (src_ctl_index > 0)
+				{
+					int src_index = route & 0x1F;
+					if (nr >= routes.n_routes)
+						return nr; /* No room for more, quit */
+					route = ((src_ctl_index-1) << 21) | (src_index << 16) | (ctl_index << 5) | queue_index;
+					pr_debug("%s: cfg=%d 0x%x @ %p\n", __func__, ctl_index, route, ctl_route_base + queue_index);
+					status = put_user(route, routes.proutes + nr);
+					if (status)
+						return status;
+					++nr;
+				}
 			}
 		}
 	}
 	return status ? status : nr; /* Return number of items found */
+}
+
+static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
+{
+	int ctl_index;
+	int queue_index;
+	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
+	{
+		int __iomem *ctl_route_base;
+		/* Remove outgoing routes */
+		ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		for (queue_index = 0; queue_index < 32; ++queue_index)
+		{
+			ctl_route_base[queue_index] = 0;
+		}
+		/* Remove incoming routes */
+		ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2);
+		for (queue_index = 0; queue_index < 32; ++queue_index)
+		{
+			ctl_route_base[queue_index] = 0;
+		}
+	}
+	return 0;
 }
 
 static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
@@ -293,6 +332,9 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 
 	switch (_IOC_NR(cmd))
 	{
+		case DYPLO_IOC_ROUTE_CLEAR: /* Remove all routes */
+			status = dyplo_ctl_route_clear(dev);
+			break;
 		case DYPLO_IOC_ROUTE_SET: /* Set routes. */
 			status = dyplo_ctl_route_add_from_user(dev, arg);
 			break;
@@ -510,7 +552,7 @@ static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, in
 		fifo_dev->config_parent->control_base;
 	if (thd > DYPLO_FIFO_READ_SIZE/2)
 		thd = DYPLO_FIFO_READ_SIZE/2;
-	if (thd)
+	else if (thd)
 		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
 	*(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index) = thd;
 	*(control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2)) = BIT(index);
@@ -660,11 +702,8 @@ static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
 	u32 result = *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
-	pr_debug("%s index=%d value=0x%x (%d free)\n", __func__, index, result, DYPLO_FIFO_WRITE_SIZE-(result & 0xFFFF));
-	result &= 0xFFFF; /* Only lower 16 bits */
-	if (result >= DYPLO_FIFO_WRITE_SIZE)
-		return 0;
-	return DYPLO_FIFO_WRITE_SIZE - result;  /* @ */
+	pr_debug("%s index=%d value=0x%x (%d free)\n", __func__, index, result, result);
+	return result;
 }
 
 static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
@@ -674,8 +713,8 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 		fifo_dev->config_parent->control_base;
 	if (thd > DYPLO_FIFO_WRITE_SIZE/2)
 		thd = DYPLO_FIFO_WRITE_SIZE/2;
-	else
-		thd = DYPLO_FIFO_WRITE_SIZE - thd; /* @ */
+	else if (thd)
+		--thd; /* IRQ will trigger when level is above thd */
 	*(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index) = thd;
 	*(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2)) = BIT(index);
 	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2)));
@@ -1005,8 +1044,8 @@ static int dyplo_probe(struct platform_device *pdev)
 	 * devices is the address space divided by 64, minus one for the
 	 * generic control (which is accomplished by "end" being inclusive).
 	 * */
-	dev->number_of_config_devices =
-		(dev->mem->end - dev->mem->start) / DYPLO_CONFIG_SIZE;
+	dev->number_of_config_devices = 3; /* TODO */
+		//(dev->mem->end - dev->mem->start) / DYPLO_CONFIG_SIZE;
 	dev->config_devices = devm_kzalloc(&pdev->dev,
 		dev->number_of_config_devices * sizeof(struct dyplo_config_dev),
 		GFP_KERNEL);
@@ -1136,4 +1175,4 @@ static struct platform_driver dyplo_driver = {
 };
 module_platform_driver(dyplo_driver);
 
-/* modprobe -r dyplo ; opkg remove --force-depends kernel-module-dyplo && opkg update && opkg install kernel-module-dyplo && modprobe -v dyplo */
+/* modprobe -r dyplo ; opkg remove --force-depends kernel-module-dyplo && opkg update && opkg install kernel-module-dyplo && cat /usr/share/fpga.bin > /dev/xdevcfg && modprobe -v dyplo */

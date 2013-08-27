@@ -21,6 +21,9 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Systems");
 
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+
 static const char DRIVER_CLASS_NAME[] = "dyplo";
 static const char DRIVER_CONTROL_NAME[] = "dyploctl";
 static const char DRIVER_CONFIG_NAME[] = "dyplocfg%d";
@@ -1010,6 +1013,66 @@ error_register_chrdev_region:
 	return retval;
 }
 
+static int dyplo_proc_show(struct seq_file *m, void *offset)
+{
+	struct dyplo_dev *dev = m->private;
+	int i;
+	int ctl_index;
+	if (dev == NULL) {
+		seq_printf(m, "No dyplo device instance!\n");
+		return 0;
+	}
+	seq_printf(m, "ncfg=%d nfifo=%d\nFIFO states:\n",
+		dev->number_of_config_devices, dev->number_of_fifo_devices);
+	for (i = 0; i < dev->number_of_fifo_devices>>1; ++i)
+	{
+		__iomem int *control_base =
+			dev->fifo_devices[i].config_parent->control_base;
+		int lw = dyplo_fifo_write_level(&dev->fifo_devices[i]);
+		int lr = dyplo_fifo_read_level(&dev->fifo_devices[i+32]);
+		int tw = *(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + i);
+		int tr = *(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + i);
+		seq_printf(m, "fifo=%2d w=%3d (%3d) r=%4d (%4d)\n",
+			i, lw, tw, lr, tr);
+	}
+	seq_printf(m, "Route table:\n");
+	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
+	{
+		int queue_index;
+		int __iomem *ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		seq_printf(m, "ctl_index=%d @ %p\n", ctl_index, ctl_route_base);
+		for (queue_index = 0; queue_index < 32; ++queue_index)
+		{
+			unsigned int route = ctl_route_base[queue_index];
+			if (route)
+			{
+				int src_ctl_index = route >> 5;
+				if (src_ctl_index > 0)
+				{
+					int src_index = route & 0x1F;
+					seq_printf(m, "route %d,%d -> %d,%d\n",
+						ctl_index, queue_index, src_ctl_index-1, src_index);
+				}
+			}
+		}
+	}
+	
+	return 0;
+}
+
+ static int dyplo_proc_open(struct inode *inode, struct file *file)
+ {
+     return single_open(file, dyplo_proc_show, PDE_DATA(inode));
+ }
+
+static const struct file_operations dyplo_proc_fops = {
+	.owner	= THIS_MODULE,
+	.open	= dyplo_proc_open,
+	.read	= seq_read,
+	.llseek	= seq_lseek,
+	.release = single_release,
+};
+
 static int dyplo_probe(struct platform_device *pdev)
 {
 	struct dyplo_dev *dev;
@@ -1018,6 +1081,7 @@ static int dyplo_probe(struct platform_device *pdev)
 	int retval;
 	int device_index;
 	u32 control_id;
+	struct proc_dir_entry *proc_file_entry;
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
@@ -1120,8 +1184,11 @@ static int dyplo_probe(struct platform_device *pdev)
 		++device_index;
 	}
 
+	proc_file_entry = proc_create_data(DRIVER_CLASS_NAME, 0444, NULL, &dyplo_proc_fops, dev);
+	if (proc_file_entry == NULL)
+		dev_err(&pdev->dev, "unable to create proc entry\n");
+
 	return 0;
-	
 		
 failed_device_create_cfg:
 	while (device_index) {
@@ -1147,6 +1214,8 @@ static int dyplo_remove(struct platform_device *pdev)
 	if (!dev)
 		return -ENODEV;
 	
+	remove_proc_entry(DRIVER_CLASS_NAME, NULL);
+
 	for (i = dev->number_of_config_devices + dev->number_of_fifo_devices;
 			i >= 0; --i)
 		device_destroy(dev->class, dev->devt + i);

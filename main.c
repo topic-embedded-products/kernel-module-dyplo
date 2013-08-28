@@ -1018,22 +1018,33 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 	struct dyplo_dev *dev = m->private;
 	int i;
 	int ctl_index;
+	unsigned int irq_r_mask;
+	unsigned int irq_r_status;
+	unsigned int irq_w_mask;
+	unsigned int irq_w_status;
+	__iomem int *control_base;
 	if (dev == NULL) {
 		seq_printf(m, "No dyplo device instance!\n");
 		return 0;
 	}
 	seq_printf(m, "ncfg=%d nfifo=%d\nFIFO states:\n",
 		dev->number_of_config_devices, dev->number_of_fifo_devices);
+	control_base = dev->fifo_devices[0].config_parent->control_base;
+	irq_r_mask = *(control_base + (DYPLO_REG_FIFO_READ_IRQ_MASK>>2));
+	irq_r_status = *(control_base + (DYPLO_REG_FIFO_READ_IRQ_STATUS>>2));
+	irq_w_mask = *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2));
+	irq_w_status = *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_STATUS>>2));
 	for (i = 0; i < dev->number_of_fifo_devices>>1; ++i)
 	{
-		__iomem int *control_base =
-			dev->fifo_devices[i].config_parent->control_base;
+		unsigned int mask = BIT(i);
 		int lw = dyplo_fifo_write_level(&dev->fifo_devices[i]);
 		int lr = dyplo_fifo_read_level(&dev->fifo_devices[i+32]);
 		int tw = *(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + i);
 		int tr = *(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + i);
-		seq_printf(m, "fifo=%2d w=%3d (%3d) r=%4d (%4d)\n",
-			i, lw, tw, lr, tr);
+		seq_printf(m, "fifo=%2d w=%3d (%3d%c%c) r=%4d (%4d%c%c)\n",
+			i,
+			lw, tw, irq_w_mask & mask ? 'w' : '.', irq_w_status & mask ? 'i' : '.',
+			lr, tr, irq_r_mask & mask ? 'w' : '.', irq_r_status & mask ? 'i' : '.');
 	}
 	seq_printf(m, "Route table:\n");
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)

@@ -1,0 +1,83 @@
+The dyplo kernel module exports the following devices:
+
+/dev/dyploctl
+The main control node.
+Multiple processes can open this node simultaneously.
+read:
+  Returns the contents of the control memory area, from the AXI bus.
+  Intended mostly for debugging purposes.
+seek:
+  Set the "file" pointer for read actions. Allows to fetch "sparse"
+  regions with read().
+write:
+  Does nothing.
+mmap:
+  Provides direct access to the first 64k of AXI memory, which is where
+  the control is configured.
+ioctl:
+  For getting and setting routes in user applications.
+
+/dev/dyplocfg*
+Implementation dependent configuration node. Allows access to 64k of AXI
+memory. There is one device file per block. This device can be opened
+once for reading, and once for writing (or once in read+write mode).
+read, seek, write:
+  Allows to manipulate memory as if it were a file. All sizes and
+  offsets must be aligned on 32-bit boundaries. Writing or reading less
+  than 4 bytes will fail.
+mmap:
+  Provides a direct mapping of the configuration memory. Read/write to
+  the returned pointer will directly be directed at the AXI interface
+  of the device, so alignment and other restrictions may apply.
+
+/dev/dyplor*
+Access to a "Read" type fifo in the CPU node.
+Each can be opened only once.
+read:
+  Fetches data from the fifo. Will block until the complete buffer has
+  been filled with data, unless non-blocking IO was requested. When used
+  in non-blocking mode, will return as much data as was available, or
+  fail with EAGAIN if no data was available at all.
+poll:
+  Allows the device to be used in a select() or poll() system call.
+
+/dev/dyplow*
+Access to a "Write" type fifo in the CPU node.
+Each can be opened only once.
+write:
+  Writes data to the fifo. Will block until the complete buffer has
+  been transferred, unless non-blocking IO was requested. When used in
+  non-blocking mode, will write to the fifo until there is no more room,
+  or fail with EAGAIN if there was no room at the start of the call.
+poll:
+  Allows the device to be used in a select() or poll() system call.
+
+/proc/dyplo
+Outputs debugging information about the device's status. Will read
+various fields via the AXI bus and display the contents in ASCII.
+Displays:
+ncfg=3 nfifo=64                                                                 
+  Number of configurable blocks (3) including CPU interface and number
+  of FIFO's (64), both read and write, in the CPU block.
+fifo=11 w=255 (  3.i) r=   0 (   0w.)                                           
+  FIFO state. For each fifo, displays the index (11), the number of
+  32-bit words available in the write buffer (255), the threshold that
+  will trigger an interrupt(3), whether the fifo is currently waiting
+  for an irq (no), if the interrupt status is active (yes),
+  the number of bytes waiting in the read fifo (0), the current treshold
+  (0), whether it is waiting for an interrupt (yes) and whether the irq
+  is signaled (no).
+route 0,1 -> 2,0                                                                
+  Route assignment. Displays outgoing fifo control node and index, and
+  the receiving fifo control node and index. In this case, a route from
+  node 0 fifo 1 to node 2 fifo 0.
+ 
+
+Typical driver usage from userspace:
+- Open /dev/dyploctl
+- Open /dev/dyplorX and /dev/dyplowY fifo interfaces
+- Open /dev/dyplocfg1 for read/write and configure the node by writing
+  settings to it.
+- Use ioctrl(dyploctl, DYPLO_IOCSROUTE, ...) to set up routes to and
+  from the first configurable block to fifo's X and Y.
+- Write data to dyplowY and read results back from dyplorX.

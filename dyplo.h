@@ -47,6 +47,9 @@
 #define DYPLO_FIFO_WRITE_SIZE	255
 #define DYPLO_FIFO_READ_SIZE	1023
 
+#define DYPLO_NUMBER_OF_CPU_NODE_FIFOS	32
+#define DYPLO_NUMBER_OF_OTHER_NODE_FIFOS	4
+
 /* Hack: Write with burst doesn't work, limit to <32 bytes per call */
 #define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	28
 /* Reading does not suffer from this problem it appears */

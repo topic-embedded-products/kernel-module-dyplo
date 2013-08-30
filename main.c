@@ -1,4 +1,4 @@
-// #define DEBUG
+#define DEBUG
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -70,6 +70,12 @@ struct dyplo_dev
 	/* Need to know wich device is the CPU-PL interface */
 	struct dyplo_config_dev* fifo_config_device;
 };
+
+union dyplo_route_item_u {
+	unsigned int route;
+	struct dyplo_route_item_t route_item;
+};
+
 
 static unsigned int dyplo_get_config_mem_offset(const struct dyplo_config_dev *cfg_dev)
 {
@@ -213,37 +219,38 @@ static void dyplo_ctl_route_remove_dst(struct dyplo_config_dev *cfg_dev, int que
 	}
 }
 
-static int dyplo_ctl_route_add(struct dyplo_dev *dev, u32 route)
+static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t route)
 {
-	const int index_cfg_src = (route >> 5) & 0x1F;
-	const int index_queue_src = route & 0x1F;
-	const int index_cfg_dst = (route >> 21) & 0x1F;
-	const int index_queue_dst = (route >> 16) & 0x1F;
-	pr_debug("%s(0x%x) %d,%d->%d,%d\n", __func__, route,
-		index_cfg_src, index_queue_src, index_cfg_dst, index_queue_dst);
-	if ((index_cfg_src >= dev->number_of_config_devices) ||
-	    (index_cfg_dst >= dev->number_of_config_devices))
+	int __iomem* dst_control_addr;
+	int __iomem* src_control_addr;
+
+	pr_debug("%s %d,%d->%d,%d\n", __func__,
+		route.srcNode, route.srcFifo, route.dstNode, route.dstFifo);
+	if ((route.srcNode >= dev->number_of_config_devices) ||
+	    (route.dstNode >= dev->number_of_config_devices))
+	{
+		pr_debug("%s: Invalid source or destination\n", __func__);
 	    return -EINVAL;
+	}
 	/* Remove existing routes using the same endpoints */
-	dyplo_ctl_route_remove_src(&dev->config_devices[index_cfg_src], index_queue_src);
-	dyplo_ctl_route_remove_dst(&dev->config_devices[index_cfg_dst], index_queue_dst);
+	dyplo_ctl_route_remove_src(&dev->config_devices[route.srcNode], route.srcFifo);
+	dyplo_ctl_route_remove_dst(&dev->config_devices[route.dstNode], route.dstFifo);
 	/* Setup route. The PL assumes that "0" is the control node, hence
 	 * the "+1" in config node indices */
-	int __iomem* dst_control_addr =
-		dev->config_devices[index_cfg_src].control_base +
+	dst_control_addr =
+		dev->config_devices[route.srcNode].control_base +
 		(DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) +
-		index_queue_src;
-	int __iomem* src_control_addr =
-		dev->config_devices[index_cfg_dst].control_base +
+		route.srcFifo;
+	src_control_addr =
+		dev->config_devices[route.dstNode].control_base +
 		(DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) +
-		index_queue_dst;
-	*dst_control_addr = ((index_cfg_dst+1) << 5) | index_queue_dst;
-	pr_debug("%s (%d) @ %p: %x\n", __func__, index_cfg_src,
-		dst_control_addr, ((index_cfg_dst+1) << 5) | index_queue_dst);
-	*src_control_addr = ((index_cfg_src+1) << 5) | index_queue_src;
-	pr_debug("%s (%d) @ %p: %x\n", __func__, index_cfg_dst,
-		src_control_addr, ((index_cfg_src+1) << 5) | index_queue_src);
-		
+		route.dstFifo;
+	*dst_control_addr = ((route.dstNode+1) << 5) | route.dstFifo;
+	pr_debug("%s (%d) @ %p: %x\n", __func__, route.srcNode,
+		dst_control_addr, ((route.dstNode+1) << 5) | route.dstFifo);
+	*src_control_addr = ((route.srcNode+1) << 5) | route.srcFifo;
+	pr_debug("%s (%d) @ %p: %x\n", __func__, route.dstNode,
+		src_control_addr, ((route.srcNode+1) << 5) | route.srcFifo);
 	return 0;
 }
 
@@ -255,11 +262,11 @@ static int dyplo_ctl_route_add_from_user(struct dyplo_dev *dev, const struct dyp
 		return -EFAULT;
 	while (routes.n_routes--)
 	{
-		unsigned int route;
-		status = get_user(route, routes.proutes);
+		union dyplo_route_item_u u;
+		status = get_user(u.route, (unsigned int*)routes.proutes);
 		if (status)
 			break;
-		status = dyplo_ctl_route_add(dev, route);
+		status = dyplo_ctl_route_add(dev, u.route_item);
 		if (status)
 			break;
 		++routes.proutes;
@@ -293,9 +300,9 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 					int src_index = route & 0x1F;
 					if (nr >= routes.n_routes)
 						return nr; /* No room for more, quit */
-					route = ((src_ctl_index-1) << 21) | (src_index << 16) | (ctl_index << 5) | queue_index;
+					route = (ctl_index << 24) | (queue_index << 16) | ((src_ctl_index-1) << 8) | (src_index);
 					pr_debug("%s: cfg=%d 0x%x @ %p\n", __func__, ctl_index, route, ctl_route_base + queue_index);
-					status = put_user(route, routes.proutes + nr);
+					status = put_user(route, (unsigned int*)routes.proutes + nr);
 					if (status)
 						return status;
 					++nr;
@@ -356,16 +363,20 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 			status = dyplo_ctl_route_clear(dev);
 			break;
 		case DYPLO_IOC_ROUTE_SET: /* Set routes. */
-			status = dyplo_ctl_route_add_from_user(dev, arg);
+			status = dyplo_ctl_route_add_from_user(dev, (struct dyplo_route_t __user *)arg);
 			break;
 		case DYPLO_IOC_ROUTE_GET: /* Get routes. */
-			status = dyplo_ctl_route_get_from_user(dev, arg);
+			status = dyplo_ctl_route_get_from_user(dev, (struct dyplo_route_t __user *)arg);
 			break;
 		case DYPLO_IOC_ROUTE_TELL: /* Tell route: Adds a single route entry */
-			status = dyplo_ctl_route_add(dev, arg);
+		{
+			union dyplo_route_item_u u;
+			u.route = arg;
+			status = dyplo_ctl_route_add(dev, u.route_item);
 			break;
+		}
 		default:
-			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%x).\n", _IOC_NR(cmd), arg);
+			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
 			status = -ENOTTY;
 	}
 

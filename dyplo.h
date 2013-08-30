@@ -56,10 +56,18 @@
 #define DYPLO_FIFO_READ_MAX_BURST_SIZE DYPLO_FIFO_MEMORY_SIZE
 
 /* ioctl values for dyploctl device, set and get routing tables */
+struct dyplo_route_item_t {
+	unsigned char dstFifo; /* LSB */
+	unsigned char dstNode;
+	unsigned char srcFifo;
+	unsigned char srcNode; /* MSB */
+};
+
 struct dyplo_route_t  {
 	unsigned int n_routes;
-	unsigned int* proutes;
+	struct dyplo_route_item_t* proutes;
 };
+
 
 #define DYPLO_IOC_MAGIC	'd'
 #define DYPLO_IOC_ROUTE_CLEAR	0x00

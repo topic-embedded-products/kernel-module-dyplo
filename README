@@ -1,0 +1,48 @@
+kernel-module-dyplo: Linux driver module for Dyplo
+
+
+DESCRIPTION
+
+This module forms the link between the Dyplo IP in programmable logic and
+userspace programs. The "libdyplo" interface further wraps the driver
+interface, and is strongly recommended. The driver can be used "as is"
+though, see kernel-module-dyplo.txt for a description of the /dev/ tree
+it creates and how to use it.
+
+
+BUILDING
+
+Build this module like any other. If you are using OpenEmbedded or Yocto,
+simply use the "kernel-module-dyplo.bb" recipe to build and deploy it.
+
+If you have your own cross-compilation environment, have it set up the usual
+environments for make, in particular $CC and $CFLAGS, and set $KERNEL_SRC
+to point at the development sources for your kernel. The provided makefile
+will then build the module named "dyplo.ko".
+
+It is also possible to integrate the module into the kernel directly. This
+requires adapting Kconfig and makefiles in the kernel accordingly.
+
+
+CONFIGURATION
+
+The module requires a devicetree entry. Add a snippet like the following
+to your dts file:
+
+&fpga_axi {
+	dyplo@64400000 {
+		compatible = "topic,dyplo-1.00.a";
+		reg = <0x64400000 0x200000>;
+		interrupt-parent = <&gic>;
+		interrupts = <0 59 0x4>;
+	};
+};
+
+In this snippet, Dyplo will be using memory address 0x64400000 on the
+AXI bus, and a total of 1MB (0x20000) address space. The interrupt is
+set to 91 (which is 59+32) and must be of the "level" type (0x04).
+These settings must match what was programmed into the IP in the PL.
+If the address is wrong, this will likely result in bus errors or even
+system lockup when the module loads. If the IRQ is incorrect, the driver
+will load and appear to function , but data transfers will fail to
+function correctly.

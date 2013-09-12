@@ -313,6 +313,23 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 	return status ? status : nr; /* Return number of items found */
 }
 
+static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index)
+{
+	int queue_index;
+	const int number_of_fifos =
+		dyplo_number_of_queues(&dev->config_devices[ctl_index]);
+	int __iomem *ctl_route_base_out = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+	int __iomem *ctl_route_base_in = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2);
+	for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
+	{
+		dyplo_ctl_route_remove_src(&dev->config_devices[ctl_index], queue_index);
+		dyplo_ctl_route_remove_dst(&dev->config_devices[ctl_index], queue_index);
+		ctl_route_base_out[queue_index] = 0;
+		ctl_route_base_in[queue_index] = 0;
+	}
+	return 0;
+}
+
 static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 {
 	int ctl_index;
@@ -375,6 +392,9 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 			status = dyplo_ctl_route_add(dev, u.route_item);
 			break;
 		}
+		case DYPLO_IOC_ROUTE_DELETE: /* Remove routes to a node */
+			status = dyplo_ctl_route_delete(dev, arg);
+			break;
 		default:
 			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
 			status = -ENOTTY;

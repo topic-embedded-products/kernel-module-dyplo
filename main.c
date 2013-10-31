@@ -1099,7 +1099,7 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 		int __iomem *ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		const int number_of_fifos =
 			dyplo_number_of_queues(&dev->config_devices[ctl_index]);
-		seq_printf(m, "ctl_index=%d @ %p\n", ctl_index, ctl_route_base);
+		seq_printf(m, "ctl_index=%d id=%#x\n", ctl_index, dev->config_devices[ctl_index].device_id);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
 			unsigned int route = ctl_route_base[queue_index];
@@ -1115,6 +1115,8 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 			}
 		}
 	}
+	seq_printf(m, "Backplane counters: %d %d %d %d\n",
+		dev->base[0x480/4+0], dev->base[0x480/4+1], dev->base[0x480/4+2], dev->base[0x480/4+3]);
 	
 	return 0;
 }

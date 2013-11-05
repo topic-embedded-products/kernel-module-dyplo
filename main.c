@@ -1,4 +1,20 @@
-// #define DEBUG
+/*
+ * Copyright (C) 2013 Topic Embedded Systems
+ * 
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ * 
+ */
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -16,13 +32,12 @@
 #include <linux/poll.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
-#include "dyplo.h"
-/* Try to keep the following statement on line 21 */
-MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Topic Embedded Systems");
-
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include "dyplo.h"
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Mike Looijmans <mike.looijmans@topic.nl>");
 
 static const char DRIVER_CLASS_NAME[] = "dyplo";
 static const char DRIVER_CONTROL_NAME[] = "dyploctl";
@@ -1306,5 +1321,3 @@ static struct platform_driver dyplo_driver = {
 	.remove = dyplo_remove,
 };
 module_platform_driver(dyplo_driver);
-
-/* modprobe -r dyplo ; opkg remove --force-depends kernel-module-dyplo && opkg update && opkg install kernel-module-dyplo && cat /usr/share/fpga.bin > /dev/xdevcfg && modprobe -v dyplo */

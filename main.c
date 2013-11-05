@@ -13,7 +13,6 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- * 
  */
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -233,36 +232,30 @@ static int dyplo_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
-static void dyplo_ctl_route_remove_src(struct dyplo_config_dev *cfg_dev, int queue)
+static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
 {
-	u32 route = *(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + queue);
-	const int index_cfg_dst = ((route >> 5) & 0x1F) - 1;
-	if (index_cfg_dst >= 0)
+	int ctl_index;
+	int queue_index;
+	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
-		const int index_queue_dst = (route) & 0x1F;
-		pr_debug("%s(%d) route=%x remove %d[%d]\n", __func__, queue, route, index_cfg_dst, index_queue_dst);
-		*(cfg_dev->parent->config_devices[index_cfg_dst].control_base +
-			(DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) + index_queue_dst) = 0;
-	}
-}
-
-static void dyplo_ctl_route_remove_dst(struct dyplo_config_dev *cfg_dev, int queue)
-{
-	u32 route = *(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) + queue);
-	const int index_cfg_src = ((route >> 5) & 0x1F) - 1;
-	if (index_cfg_src >= 0)
-	{
-		const int index_queue_src = (route) & 0x1F;
-		pr_debug("%s(%d) remove %d[%d]\n", __func__, queue, index_cfg_src, index_queue_src);
-		*(cfg_dev->parent->config_devices[index_cfg_src].control_base +
-			(DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) + index_queue_src) = 0;
+		const int number_of_fifos =
+			dyplo_number_of_queues(&dev->config_devices[ctl_index]);
+		int __iomem *ctl_route_base_out =
+			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
+		{
+			if (ctl_route_base_out[queue_index] == route) {
+				pr_debug("removed route %d,%d->%d,%d\n", ctl_index, queue_index, (route>>5)-1, route&0x1f);
+				ctl_route_base_out[queue_index] = 0;
+			}
+		}
 	}
 }
 
 static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t route)
 {
 	int __iomem* dst_control_addr;
-	int __iomem* src_control_addr;
+	u32 dst_route;
 
 	pr_debug("%s %d,%d->%d,%d\n", __func__,
 		route.srcNode, route.srcFifo, route.dstNode, route.dstFifo);
@@ -272,25 +265,17 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 		pr_debug("%s: Invalid source or destination\n", __func__);
 	    return -EINVAL;
 	}
-	/* Remove existing routes using the same endpoints */
-	dyplo_ctl_route_remove_src(&dev->config_devices[route.srcNode], route.srcFifo);
-	dyplo_ctl_route_remove_dst(&dev->config_devices[route.dstNode], route.dstFifo);
+	dst_route = ((route.dstNode+1) << 5) | route.dstFifo;
+	dyplo_ctl_route_remove_dst(dev, dst_route);
 	/* Setup route. The PL assumes that "0" is the control node, hence
 	 * the "+1" in config node indices */
 	dst_control_addr =
 		dev->config_devices[route.srcNode].control_base +
 		(DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) +
 		route.srcFifo;
-	src_control_addr =
-		dev->config_devices[route.dstNode].control_base +
-		(DYPLO_REG_FIFO_READ_SOURCE_BASE>>2) +
-		route.dstFifo;
-	*dst_control_addr = ((route.dstNode+1) << 5) | route.dstFifo;
 	pr_debug("%s (%d) @ %p: %x\n", __func__, route.srcNode,
-		dst_control_addr, ((route.dstNode+1) << 5) | route.dstFifo);
-	*src_control_addr = ((route.srcNode+1) << 5) | route.srcFifo;
-	pr_debug("%s (%d) @ %p: %x\n", __func__, route.dstNode,
-		src_control_addr, ((route.srcNode+1) << 5) | route.srcFifo);
+		dst_control_addr, dst_route);
+	*dst_control_addr = dst_route;
 	return 0;
 }
 
@@ -353,19 +338,42 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 	return status ? status : nr; /* Return number of items found */
 }
 
-static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index)
+static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete)
 {
 	int queue_index;
+	int ctl_index;
+	const int match = (ctl_index_to_delete+1) << 5;
 	const int number_of_fifos =
-		dyplo_number_of_queues(&dev->config_devices[ctl_index]);
-	int __iomem *ctl_route_base_out = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
-	int __iomem *ctl_route_base_in = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2);
-	for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
-	{
-		dyplo_ctl_route_remove_src(&dev->config_devices[ctl_index], queue_index);
-		dyplo_ctl_route_remove_dst(&dev->config_devices[ctl_index], queue_index);
+		dyplo_number_of_queues(&dev->config_devices[ctl_index_to_delete]);
+	int __iomem *ctl_route_base_out = dev->config_devices[ctl_index_to_delete].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+	for (queue_index = 0; queue_index < number_of_fifos; ++queue_index) {
 		ctl_route_base_out[queue_index] = 0;
-		ctl_route_base_in[queue_index] = 0;
+	}
+	for (ctl_index = 0; ctl_index < ctl_index_to_delete; ++ctl_index)
+	{
+		const int number_of_fifos =
+			dyplo_number_of_queues(&dev->config_devices[ctl_index]);
+		int __iomem *ctl_route_base_out =
+			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
+		{
+			if ((ctl_route_base_out[queue_index] & 0xFFE0) == match) {
+				ctl_route_base_out[queue_index] = 0;
+			}
+		}
+	}
+	for (ctl_index = ctl_index_to_delete+1; ctl_index < dev->number_of_config_devices; ++ctl_index)
+	{
+		const int number_of_fifos =
+			dyplo_number_of_queues(&dev->config_devices[ctl_index]);
+		int __iomem *ctl_route_base_out =
+			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
+		{
+			if ((ctl_route_base_out[queue_index] & 0xFFE0) == match) {
+				ctl_route_base_out[queue_index] = 0;
+			}
+		}
 	}
 	return 0;
 }
@@ -381,12 +389,6 @@ static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 		const int number_of_fifos =
 			dyplo_number_of_queues(&dev->config_devices[ctl_index]);
 		ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
-		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
-		{
-			ctl_route_base[queue_index] = 0;
-		}
-		/* Remove incoming routes */
-		ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_READ_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
 			ctl_route_base[queue_index] = 0;
@@ -644,10 +646,10 @@ static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, in
 		thd = DYPLO_FIFO_READ_SIZE/2;
 	else if (thd)
 		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
-	*(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index) = thd;
-	*(control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2)) = BIT(index);
 	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, 
 		*(control_base + (DYPLO_REG_FIFO_READ_IRQ_MASK>>2)));
+	*(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index) = thd;
+	*(control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2)) = BIT(index);
 }
 
 static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
@@ -805,9 +807,10 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 		thd = DYPLO_FIFO_WRITE_SIZE/2;
 	else if (thd)
 		--thd; /* IRQ will trigger when level is above thd */
+	pr_debug("%s index=%d thd=%d mask=%x\n", __func__,
+		index, thd, *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2)));
 	*(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index) = thd;
 	*(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2)) = BIT(index);
-	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2)));
 }
 
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
@@ -1289,6 +1292,10 @@ static int dyplo_probe(struct platform_device *pdev)
 	proc_file_entry = proc_create_data(DRIVER_CLASS_NAME, 0444, NULL, &dyplo_proc_fops, dev);
 	if (proc_file_entry == NULL)
 		dev_err(&pdev->dev, "unable to create proc entry\n");
+
+	/* And finally, enable the backplane */
+	*(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_SET>>2)) =
+		(2 << dev->number_of_config_devices) - 1;
 
 	return 0;
 		

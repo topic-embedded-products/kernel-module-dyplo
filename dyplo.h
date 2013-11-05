@@ -18,9 +18,11 @@
 #define DYPLO_NODE_REG_SIZE	0x800
 #define DYPLO_REG_NODE_ID	0x00
 
+#define DYPLO_REG_BACKPLANE_ENABLE_STATUS	0x10
+#define DYPLO_REG_BACKPLANE_ENABLE_SET	0x14
+#define DYPLO_REG_BACKPLANE_ENABLE_CLR	0x18
+
 /* Specific layout of the CPU/PL communication node */
-#define DYPLO_REG_FIFO_READ_ERROR	0x18
-#define DYPLO_REG_FIFO_WRITE_ERROR	0x1C
 #define DYPLO_REG_FIFO_WRITE_IRQ_MASK	0x20
 #define DYPLO_REG_FIFO_WRITE_IRQ_STATUS	0x24
 #define DYPLO_REG_FIFO_WRITE_IRQ_SET	0x28
@@ -30,8 +32,6 @@
 #define DYPLO_REG_FIFO_READ_IRQ_SET	0x38
 #define DYPLO_REG_FIFO_READ_IRQ_CLR	0x3C
 
-/* Base address of the source registers */
-#define DYPLO_REG_FIFO_READ_SOURCE_BASE	0x080
 /* Read level threshold */
 #define DYPLO_REG_FIFO_READ_THD_BASE	0x100
 /* Actual fill level */
@@ -51,7 +51,7 @@
 #define DYPLO_NUMBER_OF_OTHER_NODE_FIFOS	4
 
 /* Hack: Write with burst doesn't work, limit to <32 bytes per call */
-#define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	28
+#define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	DYPLO_FIFO_MEMORY_SIZE
 /* Reading does not suffer from this problem it appears */
 #define DYPLO_FIFO_READ_MAX_BURST_SIZE DYPLO_FIFO_MEMORY_SIZE
 

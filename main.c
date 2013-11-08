@@ -575,7 +575,7 @@ static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 	if (vsize > (DYPLO_CONFIG_SIZE - off))
 		return -EINVAL; /*  spans too high */
 
-	if (remap_pfn_range(vma, vma->vm_start, physical, vsize, vma->vm_page_prot))
+	if (remap_pfn_range(vma, vma->vm_start, physical >> PAGE_SHIFT, vsize, vma->vm_page_prot))
 		return -EAGAIN;
 
 	return 0;

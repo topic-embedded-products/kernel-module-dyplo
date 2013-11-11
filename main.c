@@ -194,16 +194,14 @@ static int dyplo_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct dyplo_dev *dev = filp->private_data;
 
-	if (vma->vm_pgoff != 0)
-	{
-		 printk(KERN_WARNING "dyplo_ctl_mmap with non-zero offset\n");
-		 return -EFAULT;
-	}
-
+	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
+	unsigned long physical = dev->mem->start + off;
+	unsigned long vsize = vma->vm_end - vma->vm_start;
+	if (vsize > (DYPLO_CONFIG_SIZE - off))
+		return -EINVAL; /*  spans too high */
 	vma->vm_flags |= VM_IO;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	if (remap_pfn_range(vma, vma->vm_start, dev->mem->start >> PAGE_SHIFT,
-			vma->vm_end - vma->vm_start, vma->vm_page_prot))
+	if (remap_pfn_range(vma, vma->vm_start, physical >> PAGE_SHIFT, vsize, vma->vm_page_prot))
 		return -EAGAIN;
 	return 0;
 }
@@ -565,7 +563,6 @@ loff_t dyplo_cfg_llseek(struct file *filp, loff_t off, int whence)
 static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-
 	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
 	unsigned long physical =
 		cfg_dev->parent->mem->start +
@@ -574,10 +571,10 @@ static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 	unsigned long vsize = vma->vm_end - vma->vm_start;
 	if (vsize > (DYPLO_CONFIG_SIZE - off))
 		return -EINVAL; /*  spans too high */
-
+	vma->vm_flags |= VM_IO;
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 	if (remap_pfn_range(vma, vma->vm_start, physical >> PAGE_SHIFT, vsize, vma->vm_page_prot))
 		return -EAGAIN;
-
 	return 0;
 }
 

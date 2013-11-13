@@ -128,9 +128,36 @@ static int dyplo_ctl_release(struct inode *inode, struct file *filp)
 }
 
 static ssize_t dyplo_ctl_write (struct file *filp, const char __user *buf, size_t count,
-	loff_t *pos)
+	loff_t *f_pos)
 {
-	return count;
+	int status;
+	struct dyplo_dev *dev = filp->private_data;
+	u32 __iomem *mapped_memory = dev->base;
+	size_t offset;
+
+	/* EOF when past our area */
+	if (*f_pos >= DYPLO_CONFIG_SIZE)
+		return 0;
+
+	if (count < 4) /* Do not allow read or write below word size */
+		return -EINVAL;
+
+	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
+	count &= ~0x03;
+	if ((offset + count) > DYPLO_CONFIG_SIZE)
+		count = DYPLO_CONFIG_SIZE - offset;
+
+	if (copy_from_user(mapped_memory + (offset >> 2), buf, count))
+	{
+		status = -EFAULT;
+	}
+	else
+	{
+		status = count;
+		*f_pos = offset + count;
+	}
+
+	return status;
 }
 
 static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,

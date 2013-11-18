@@ -76,6 +76,10 @@ struct dyplo_route_t  {
 #define DYPLO_IOC_ROUTE_TELL	0x03
 #define DYPLO_IOC_ROUTE_DELETE	0x04
 
+#define DYPLO_IOC_BACKPLANE_STATUS	0x08
+#define DYPLO_IOC_BACKPLANE_DISABLE	0x09
+#define DYPLO_IOC_BACKPLANE_ENABLE	0x0A
+
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
  * G means "Get" through a ptr
@@ -91,3 +95,11 @@ struct dyplo_route_t  {
 #define DYPLO_IOCTROUTE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_TELL)
 /* Remove routes to a node. Argument is a integer node number. */
 #define DYPLO_IOCTROUTE_DELETE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_DELETE)
+/* Get backplane status. When called on control node, returns a bit mask where 0=CPU and
+ * 1=first HDL node and so on. When called on config node, returns the status for only
+ * that node, 0=disabled, non-zero is enabled */
+#define DYPLO_IOCQBACKPLANE_STATUS   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_BACKPLANE_STATUS)
+/* Enable or disable backplane status. Disable is required when the logic is active and
+ * you want to replace a node using partial configuration. Operations are atomic. */
+#define DYPLO_IOCTBACKPLANE_ENABLE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_BACKPLANE_ENABLE)
+#define DYPLO_IOCTBACKPLANE_DISABLE  _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_BACKPLANE_DISABLE)

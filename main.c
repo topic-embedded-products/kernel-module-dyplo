@@ -442,11 +442,13 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 			break;
 		case DYPLO_IOC_BACKPLANE_ENABLE:
 			*(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_SET>>2)) = (arg << 1);
-			status = 0;
+			/* Read back the register to assure that the transaction is complete */
+			status = *(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
 			break;
 		case DYPLO_IOC_BACKPLANE_DISABLE:
 			*(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_CLR>>2)) = (arg << 1);
-			status = 0;
+			/* Read back the register to assure that the transaction is complete */
+			status = *(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
 			break;
 		default:
 			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);

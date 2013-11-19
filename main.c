@@ -14,6 +14,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+// #define DEBUG
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -37,6 +38,10 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mike Looijmans <mike.looijmans@topic.nl>");
+
+/* When defined, copies data directly to/from user space instead of
+ * bouncing via an intermediate kernel buffer. */
+/* #define ALLOW_DIRECT_USER_IOMEM_TRANSFERS */
 
 static const char DRIVER_CLASS_NAME[] = "dyplo";
 static const char DRIVER_CONTROL_NAME[] = "dyploctl";
@@ -62,6 +67,7 @@ struct dyplo_fifo_dev
 	struct dyplo_config_dev* config_parent;
 	wait_queue_head_t fifo_wait_queue; /* So the IRQ handler can notify waiting threads */
 	int index;
+	unsigned int words_transfered;
 	bool is_open;
 };
 
@@ -644,7 +650,7 @@ static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index - DYPLO_NUMBER_OF_CPU_NODE_FIFOS; /* Read devices start at 32 */
 	int __iomem *control_base =
 		fifo_dev->config_parent->control_base;
-	int result = *(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
+	int result = ioread32(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
 	pr_debug("%s index=%d result=%d @ %p\n", __func__, index, result,
 		(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index));
 	return result;
@@ -661,8 +667,8 @@ static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, in
 		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
 	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, 
 		*(control_base + (DYPLO_REG_FIFO_READ_IRQ_MASK>>2)));
-	*(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index) = thd;
-	*(control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2)) = BIT(index);
+	iowrite32(thd, control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index);
+	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2));
 }
 
 static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
@@ -701,8 +707,10 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
 	int status = 0;
 	size_t len = 0;
-
-	pr_debug("%s(%d)\n", __func__, count);
+#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
+	int kernel_buffer[DYPLO_FIFO_READ_MAX_BURST_SIZE/sizeof(int)];
+#endif
+	printk(KERN_DEBUG "%s(%d)\n", __func__, count);
 
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
@@ -747,22 +755,33 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 				goto error;
 		}
 		do {
+			unsigned int words;
 			bytes = words_available << 2;
 			if (bytes > DYPLO_FIFO_READ_MAX_BURST_SIZE)
 				bytes = DYPLO_FIFO_READ_MAX_BURST_SIZE;
 			if (count < bytes)
 				bytes = count;
+			words = bytes >> 2;
 			pr_debug("%s copy_to_user %p (%d)\n", __func__, mapped_memory, bytes);
+#ifdef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 			if (unlikely(__copy_to_user(buf, mapped_memory, bytes))) {
 				status = -EFAULT;
 				goto error;
 			}
+#else
+			ioread32_rep(mapped_memory, kernel_buffer, words);
+			if (unlikely(__copy_to_user(buf, kernel_buffer, bytes))) {
+				status = -EFAULT;
+				goto error;
+			}
+#endif
+			fifo_dev->words_transfered += words;
 			len += bytes;
 			buf += bytes;
 			count -= bytes;
 			if (!count)
 				break;
-			words_available -= bytes >> 2;
+			words_available -= words;
 		}
 		while (words_available);
 	}
@@ -770,6 +789,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 	status = len;
 	*f_pos += len;
 error:
+	printk(KERN_DEBUG "%s -> %d pos=%u\n", __func__, status, (unsigned int)*f_pos);
 	return status;
 }
 
@@ -777,7 +797,7 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	unsigned int mask = 0;
-
+	
 	//down(&dev->pps.fop_sem); /* Guard to ensure consistency with read() */
 	if (dyplo_fifo_read_level(fifo_dev))
 			mask |= (POLLIN | POLLRDNORM); /* Data available */
@@ -787,6 +807,8 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 			dyplo_fifo_read_enable_interrupt(fifo_dev, 1);
 	poll_wait(filp, &fifo_dev->fifo_wait_queue,  wait);
 	//up(&dev->pps.fop_sem);
+
+	printk(KERN_DEBUG "%s -> %#x\n", __func__, mask);
 
 	return mask;
 }
@@ -806,7 +828,7 @@ static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index;
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
-	u32 result = *(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
+	u32 result = ioread32(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
 	pr_debug("%s index=%d value=0x%x (%d free)\n", __func__, index, result, result);
 	return result;
 }
@@ -822,8 +844,8 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 		--thd; /* IRQ will trigger when level is above thd */
 	pr_debug("%s index=%d thd=%d mask=%x\n", __func__,
 		index, thd, *(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_MASK>>2)));
-	*(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index) = thd;
-	*(control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2)) = BIT(index);
+	iowrite32(thd, control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index);
+	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2));
 }
 
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
@@ -863,6 +885,11 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
 	size_t len = 0;
+#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
+	int kernel_buffer[DYPLO_FIFO_WRITE_MAX_BURST_SIZE/sizeof(int)];
+#endif
+
+	printk(KERN_DEBUG "%s(%d)\n", __func__, count);
 
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
@@ -905,24 +932,34 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 			if (status)
 				goto error;
 		}
-		do
-		{
+		do {
+			unsigned int words;
 			bytes = words_available << 2;
 			if (bytes > DYPLO_FIFO_WRITE_MAX_BURST_SIZE)
 				bytes = DYPLO_FIFO_WRITE_MAX_BURST_SIZE;
 			if (count < bytes)
 				bytes = count;
+			words = bytes >> 2;
 			pr_debug("%s copy_from_user %p (%d)\n", __func__, mapped_memory, bytes);
+#ifdef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 			if (unlikely(__copy_from_user(mapped_memory, buf, bytes))) {
 				status = -EFAULT;
 				goto error;
 			}
+#else
+			if (unlikely(__copy_from_user(kernel_buffer, buf, bytes))) {
+				status = -EFAULT;
+				goto error;
+			}
+			iowrite32_rep(mapped_memory, kernel_buffer, words);
+#endif
+			fifo_dev->words_transfered += words;
 			len += bytes;
 			buf += bytes;
 			count -= bytes;
 			if (!count)
 				break;
-			words_available -= bytes >> 2;
+			words_available -= words;
 		}
 		while (words_available);
 	}
@@ -930,6 +967,7 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	status = len;
 	*f_pos += len;
 error:
+	printk(KERN_DEBUG "%s -> %d pos=%u\n", __func__, status, (unsigned int)*f_pos);
 	return status;
 }
 
@@ -944,8 +982,10 @@ static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
 	else
 			/* Wait for buffer half-empty */
 			dyplo_fifo_write_enable_interrupt(fifo_dev, DYPLO_FIFO_WRITE_SIZE / 2);
-	poll_wait(filp, &fifo_dev->fifo_wait_queue,  wait);
+	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
 	//up(&dev->pps.fop_sem);
+
+	printk(KERN_DEBUG "%s -> %#x\n", __func__, mask);
 
 	return mask;
 }
@@ -972,9 +1012,9 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	u32 read_status_reg = *(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_STATUS>>2));
 	/* Acknowledge the interrupt by clearing all flags that we've seen */
 	if (write_status_reg)
-		*(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2)) = write_status_reg;
+		iowrite32(write_status_reg, cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2));
 	if (read_status_reg)
-		*(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2)) = read_status_reg;
+		iowrite32(read_status_reg, cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2));
 	pr_debug("%s(status=0x%x 0x%x)\n", __func__,
 			write_status_reg, read_status_reg);
 	/* Trigger the associated wait queues, "read" queues first */
@@ -1142,10 +1182,12 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 		int lr = dyplo_fifo_read_level(&dev->fifo_devices[i+DYPLO_NUMBER_OF_CPU_NODE_FIFOS]);
 		int tw = *(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + i);
 		int tr = *(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + i);
-		seq_printf(m, "fifo=%2d w=%3d (%3d%c%c) r=%4d (%4d%c%c)\n",
+		seq_printf(m, "fifo=%2d w=%3d (%3d%c%c) r=%3d (%3d%c%c) total w=%d r=%d\n",
 			i,
 			lw, tw, irq_w_mask & mask ? 'w' : '.', irq_w_status & mask ? 'i' : '.',
-			lr, tr, irq_r_mask & mask ? 'w' : '.', irq_r_status & mask ? 'i' : '.');
+			lr, tr, irq_r_mask & mask ? 'w' : '.', irq_r_status & mask ? 'i' : '.',
+			dev->fifo_devices[i].words_transfered,
+			dev->fifo_devices[i+DYPLO_NUMBER_OF_CPU_NODE_FIFOS].words_transfered);
 	}
 	seq_printf(m, "Route table:\n");
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)

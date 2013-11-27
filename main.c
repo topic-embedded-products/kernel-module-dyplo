@@ -796,17 +796,17 @@ error:
 static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	unsigned int mask = 0;
+	unsigned int mask;
 	
-	//down(&dev->pps.fop_sem); /* Guard to ensure consistency with read() */
+	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
 	if (dyplo_fifo_read_level(fifo_dev))
-			mask |= (POLLIN | POLLRDNORM); /* Data available */
-	else
+			mask = (POLLIN | POLLRDNORM); /* Data available */
+	else {
 			/* Set IRQ to occur ASAP. May be good to have an ioctl
 			 * to increase this limit */
 			dyplo_fifo_read_enable_interrupt(fifo_dev, 1);
-	poll_wait(filp, &fifo_dev->fifo_wait_queue,  wait);
-	//up(&dev->pps.fop_sem);
+			mask = 0;
+	}
 
 	printk(KERN_DEBUG "%s -> %#x\n", __func__, mask);
 
@@ -974,16 +974,16 @@ error:
 static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
-	unsigned int mask = 0;
+	unsigned int mask;
 
-	//down(&dev->pps.fop_sem); /* Guard to ensure consistency with write() */
+	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
 	if (dyplo_fifo_write_level(fifo_dev))
-			mask |= (POLLOUT | POLLWRNORM);
-	else
+			mask = (POLLOUT | POLLWRNORM);
+	else {
 			/* Wait for buffer half-empty */
 			dyplo_fifo_write_enable_interrupt(fifo_dev, DYPLO_FIFO_WRITE_SIZE / 2);
-	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
-	//up(&dev->pps.fop_sem);
+			mask = 0;
+	}
 
 	printk(KERN_DEBUG "%s -> %#x\n", __func__, mask);
 

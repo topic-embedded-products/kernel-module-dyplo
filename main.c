@@ -407,7 +407,7 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 {
 	int status;
 
-	/* printk(KERN_DEBUG "%s(%x, %lx)\n", __func__, cmd, arg); */
+	/* pr_debug("%s(%x, %lx)\n", __func__, cmd, arg); */
 	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
 		return -ENOTTY;
 	
@@ -710,7 +710,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 #ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 	int kernel_buffer[DYPLO_FIFO_READ_MAX_BURST_SIZE/sizeof(int)];
 #endif
-	printk(KERN_DEBUG "%s(%d)\n", __func__, count);
+	pr_debug("%s(%d)\n", __func__, count);
 
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
@@ -789,7 +789,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 	status = len;
 	*f_pos += len;
 error:
-	printk(KERN_DEBUG "%s -> %d pos=%u\n", __func__, status, (unsigned int)*f_pos);
+	pr_debug("%s -> %d pos=%u\n", __func__, status, (unsigned int)*f_pos);
 	return status;
 }
 
@@ -808,7 +808,7 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 			mask = 0;
 	}
 
-	printk(KERN_DEBUG "%s -> %#x\n", __func__, mask);
+	pr_debug("%s -> %#x\n", __func__, mask);
 
 	return mask;
 }
@@ -889,7 +889,7 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	int kernel_buffer[DYPLO_FIFO_WRITE_MAX_BURST_SIZE/sizeof(int)];
 #endif
 
-	printk(KERN_DEBUG "%s(%d)\n", __func__, count);
+	pr_debug("%s(%d)\n", __func__, count);
 
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
@@ -967,7 +967,7 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	status = len;
 	*f_pos += len;
 error:
-	printk(KERN_DEBUG "%s -> %d pos=%u\n", __func__, status, (unsigned int)*f_pos);
+	pr_debug("%s -> %d pos=%u\n", __func__, status, (unsigned int)*f_pos);
 	return status;
 }
 
@@ -985,7 +985,7 @@ static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
 			mask = 0;
 	}
 
-	printk(KERN_DEBUG "%s -> %#x\n", __func__, mask);
+	pr_debug("%s -> %#x\n", __func__, mask);
 
 	return mask;
 }

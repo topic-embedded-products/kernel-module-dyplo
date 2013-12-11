@@ -80,6 +80,9 @@ struct dyplo_route_t  {
 #define DYPLO_IOC_BACKPLANE_DISABLE	0x09
 #define DYPLO_IOC_BACKPLANE_ENABLE	0x0A
 
+#define DYPLO_IOC_TRESHOLD_QUERY	0x10
+#define DYPLO_IOC_TRESHOLD_TELL	0x11
+
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
  * G means "Get" through a ptr
@@ -103,3 +106,7 @@ struct dyplo_route_t  {
  * you want to replace a node using partial configuration. Operations are atomic. */
 #define DYPLO_IOCTBACKPLANE_ENABLE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_BACKPLANE_ENABLE)
 #define DYPLO_IOCTBACKPLANE_DISABLE  _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_BACKPLANE_DISABLE)
+/* Set the thresholds for "writeable" or "readable" on a CPU node fifo. Allows
+ * tuning for low latency or reduced interrupt rate. */
+#define DYPLO_IOCQTRESHOLD   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_TRESHOLD_QUERY)
+#define DYPLO_IOCTTRESHOLD   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_TRESHOLD_TELL)

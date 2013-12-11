@@ -50,6 +50,11 @@ static const char DRIVER_FIFO_CLASS_NAME[] = "dyplo-fifo";
 static const char DRIVER_FIFO_WRITE_NAME[] = "dyplow%d";
 static const char DRIVER_FIFO_READ_NAME[] = "dyplor%d";
 
+/* How to do IO. We rarely need any memory barriers, so add a "quick"
+ * version that skips the memory barriers. */
+#define ioread32_quick	__raw_readl
+#define iowrite32_quick	__raw_writel
+
 struct dyplo_dev; /* forward */
 
 struct dyplo_config_dev
@@ -58,8 +63,6 @@ struct dyplo_config_dev
 	u32 __iomem *base;
 	u32 __iomem *control_base;
 	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
-	u32 device_id;
-	/* more to come... */
 };
 
 struct dyplo_fifo_dev
@@ -68,6 +71,7 @@ struct dyplo_fifo_dev
 	wait_queue_head_t fifo_wait_queue; /* So the IRQ handler can notify waiting threads */
 	int index;
 	unsigned int words_transfered;
+	unsigned int poll_treshold;
 	bool is_open;
 };
 
@@ -104,8 +108,9 @@ static unsigned int dyplo_get_config_mem_offset(const struct dyplo_config_dev *c
 
 static bool dyplo_is_cpu_node(const struct dyplo_config_dev *cfg_dev)
 {
+	u32 device_id = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_ID>>2));
 	return
-		(cfg_dev->device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) == DYPLO_REG_ID_PRODUCT_TOPIC_CPU;
+		(device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) == DYPLO_REG_ID_PRODUCT_TOPIC_CPU;
 }
 static int dyplo_number_of_queues(const struct dyplo_config_dev *cfg_dev)
 {
@@ -650,7 +655,7 @@ static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index - DYPLO_NUMBER_OF_CPU_NODE_FIFOS; /* Read devices start at 32 */
 	int __iomem *control_base =
 		fifo_dev->config_parent->control_base;
-	int result = ioread32(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
+	int result = ioread32_quick(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
 	pr_debug("%s index=%d result=%d @ %p\n", __func__, index, result,
 		(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index));
 	return result;
@@ -661,8 +666,8 @@ static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, in
 	int index = fifo_dev->index - DYPLO_NUMBER_OF_CPU_NODE_FIFOS; /* Read devices start at 32 */
 	int __iomem *control_base =
 		fifo_dev->config_parent->control_base;
-	if (thd > DYPLO_FIFO_READ_SIZE/2)
-		thd = DYPLO_FIFO_READ_SIZE/2;
+	if (thd > (DYPLO_FIFO_READ_SIZE*2)/4)
+		thd = (DYPLO_FIFO_READ_SIZE*2)/4;
 	else if (thd)
 		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
 	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, 
@@ -687,6 +692,7 @@ static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 		goto error;
 	}
 	fifo_dev->is_open = true;
+	fifo_dev->poll_treshold = 1;
 	filp->private_data = fifo_dev;
 error:
 	up(&dev->fop_sem);
@@ -800,12 +806,11 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 	
 	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
 	if (dyplo_fifo_read_level(fifo_dev))
-			mask = (POLLIN | POLLRDNORM); /* Data available */
+		mask = (POLLIN | POLLRDNORM); /* Data available */
 	else {
-			/* Set IRQ to occur ASAP. May be good to have an ioctl
-			 * to increase this limit */
-			dyplo_fifo_read_enable_interrupt(fifo_dev, 1);
-			mask = 0;
+		/* Set IRQ to occur on user-defined treshold (default=1) */
+		dyplo_fifo_read_enable_interrupt(fifo_dev, fifo_dev->poll_treshold);
+		mask = 0;
 	}
 
 	pr_debug("%s -> %#x\n", __func__, mask);
@@ -813,12 +818,40 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
+static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	if (unlikely(fifo_dev == NULL))
+		return -ENODEV;
+
+	/* pr_debug("%s(%x, %lx)\n", __func__, cmd, arg); */
+	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+		return -ENOTTY;
+
+	switch (_IOC_NR(cmd))
+	{
+		case DYPLO_IOC_TRESHOLD_QUERY:
+			return fifo_dev->poll_treshold;
+		case DYPLO_IOC_TRESHOLD_TELL:
+			if (arg < 1)
+				arg = 1;
+			else if (arg > 192)
+				arg = 192;
+			fifo_dev->poll_treshold = arg;
+			return 0;
+		default:
+			return -ENOTTY;
+	}
+}
+
+
 static struct file_operations dyplo_fifo_read_fops =
 {
 	.owner = THIS_MODULE,
 	.read = dyplo_fifo_read_read,
 	.llseek = no_llseek,
 	.poll = dyplo_fifo_read_poll,
+	.unlocked_ioctl = dyplo_fifo_rw_ioctl,
 	.open = dyplo_fifo_read_open,
 	.release = dyplo_fifo_read_release,
 };
@@ -828,7 +861,7 @@ static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 	int index = fifo_dev->index;
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
-	u32 result = ioread32(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
+	u32 result = ioread32_quick(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
 	pr_debug("%s index=%d value=0x%x (%d free)\n", __func__, index, result, result);
 	return result;
 }
@@ -838,8 +871,8 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 	int index = fifo_dev->index;
 	__iomem int *control_base =
 		fifo_dev->config_parent->control_base;
-	if (thd > DYPLO_FIFO_WRITE_SIZE/2)
-		thd = DYPLO_FIFO_WRITE_SIZE/2;
+	if (thd > (DYPLO_FIFO_WRITE_SIZE*2)/3)
+		thd = (DYPLO_FIFO_WRITE_SIZE*2)/3;
 	else if (thd)
 		--thd; /* IRQ will trigger when level is above thd */
 	pr_debug("%s index=%d thd=%d mask=%x\n", __func__,
@@ -865,6 +898,7 @@ static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 		goto error;
 	}
 	fifo_dev->is_open = true;
+	fifo_dev->poll_treshold = DYPLO_FIFO_WRITE_SIZE / 2;
 	filp->private_data = fifo_dev;
 error:
 	up(&dev->fop_sem);
@@ -978,11 +1012,11 @@ static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
 
 	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
 	if (dyplo_fifo_write_level(fifo_dev))
-			mask = (POLLOUT | POLLWRNORM);
+		mask = (POLLOUT | POLLWRNORM);
 	else {
-			/* Wait for buffer half-empty */
-			dyplo_fifo_write_enable_interrupt(fifo_dev, DYPLO_FIFO_WRITE_SIZE / 2);
-			mask = 0;
+		/* Wait for buffer crossing user-defined treshold */
+		dyplo_fifo_write_enable_interrupt(fifo_dev, fifo_dev->poll_treshold);
+		mask = 0;
 	}
 
 	pr_debug("%s -> %#x\n", __func__, mask);
@@ -995,6 +1029,7 @@ static struct file_operations dyplo_fifo_write_fops =
 	.write = dyplo_fifo_write_write,
 	.poll = dyplo_fifo_write_poll,
 	.llseek = no_llseek,
+	.unlocked_ioctl = dyplo_fifo_rw_ioctl,
 	.open = dyplo_fifo_write_open,
 	.release = dyplo_fifo_write_release,
 };
@@ -1193,10 +1228,12 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
 		int queue_index;
-		int __iomem *ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		int __iomem *ctl_base = dev->config_devices[ctl_index].control_base;
+		int __iomem *ctl_route_base = ctl_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		const int number_of_fifos =
 			dyplo_number_of_queues(&dev->config_devices[ctl_index]);
-		seq_printf(m, "ctl_index=%d id=%#x\n", ctl_index, dev->config_devices[ctl_index].device_id);
+		seq_printf(m, "ctl_index=%d id=%#x\n", ctl_index,
+				*(ctl_base + (DYPLO_REG_ID>>2)));
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
 			unsigned int route = ctl_route_base[queue_index];
@@ -1324,8 +1361,7 @@ static int dyplo_probe(struct platform_device *pdev)
 			(dev->base + ((DYPLO_CONFIG_SIZE>>2) * (device_index + 1)));
 		cfg_dev->control_base =
 			(dev->base + ((DYPLO_NODE_REG_SIZE>>2) * (device_index + 1)));
-		cfg_dev->device_id =
-			*(cfg_dev->control_base + (DYPLO_REG_ID>>2));
+			
 		device = device_create(dev->class, &pdev->dev,
 			devt + 1 + device_index, 
 			cfg_dev, DRIVER_CONFIG_NAME, device_index);

@@ -1295,9 +1295,13 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 			}
 		}
 	}
-	seq_printf(m, "Backplane counters: %d %d %d %d\n",
-		dev->base[0x480/4+0], dev->base[0x480/4+1], dev->base[0x480/4+2], dev->base[0x480/4+3]);
-	
+	seq_printf(m, "Backplane counters:");
+	for (i = 0; i < dev->number_of_config_devices; ++i)
+		seq_printf(m, " %d", dev->base[(DYPLO_REG_BACKPLANE_COUNTER_BASE/4) + i]);
+	seq_printf(m, "\nAXI overhead: %d, Stream in: %d, Stream out: %d\n",
+		dev->base[DYPLO_REG_AXI_COUNTER_BASE/4],
+		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+0],
+		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+1]);
 	return 0;
 }
 

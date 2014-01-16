@@ -56,6 +56,11 @@
 #define DYPLO_NODE_REG_SIZE	0x800
 #define DYPLO_REG_NODE_ID	0x00
 
+/* Counters for performance measurements */
+#define DYPLO_REG_BACKPLANE_COUNTER_BASE	0x488
+#define DYPLO_REG_AXI_COUNTER_BASE	0x1C
+#define DYPLO_REG_CPU_COUNTER_BASE	(0x60+DYPLO_NODE_REG_SIZE)
+
 /* Specific layout of the CPU/PL communication node */
 #define DYPLO_REG_FIFO_WRITE_IRQ_MASK	0x20
 #define DYPLO_REG_FIFO_WRITE_IRQ_STATUS	0x24

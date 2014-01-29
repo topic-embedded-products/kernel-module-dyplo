@@ -114,10 +114,15 @@ union dyplo_route_item_u {
 	struct dyplo_route_item_t route_item;
 };
 
-
+/* Relative offset of the configuration node in memory map */
 static unsigned int dyplo_get_config_mem_offset(const struct dyplo_config_dev *cfg_dev)
 {
 	return ((char*)cfg_dev->base - (char*)cfg_dev->parent->base);
+}
+/* 0-based index of the config node */
+static unsigned int dyplo_get_config_index(const struct dyplo_config_dev *cfg_dev)
+{
+	return (((char*)cfg_dev->base - (char*)cfg_dev->parent->base) / DYPLO_CONFIG_SIZE) - 1;
 }
 
 static bool dyplo_is_cpu_node(const struct dyplo_config_dev *cfg_dev)
@@ -648,6 +653,57 @@ static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
+static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	struct dyplo_config_dev *cfg_dev = filp->private_data;
+	int status;
+	
+	if (unlikely(cfg_dev == NULL))
+		return -ENODEV;
+	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+		return -ENOTTY;
+
+	switch (_IOC_NR(cmd))
+	{
+		case DYPLO_IOC_BACKPLANE_STATUS:
+			{
+				int index = dyplo_get_config_index(cfg_dev);
+				status = *(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+				status &= (1 << index);
+			}
+			break;
+		case DYPLO_IOC_BACKPLANE_ENABLE:
+			{
+				int index = dyplo_get_config_index(cfg_dev);
+				*(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_SET>>2)) = (1 << (index+1));
+				/* Read back the register to assure that the transaction is complete */
+				status = *(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+			}
+			break;
+		case DYPLO_IOC_BACKPLANE_DISABLE:
+			{
+				int index = dyplo_get_config_index(cfg_dev);
+				*(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_CLR>>2)) = (1 << (index+1));
+				/* Read back the register to assure that the transaction is complete */
+				status = *(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+			}
+			break;
+		case DYPLO_IOC_RESET_FIFO_WRITE:
+			iowrite32_quick(arg, (cfg_dev->control_base + (DYPLO_REG_FIFO_RESET_WRITE/4)));
+			status = 0;
+			break;
+		case DYPLO_IOC_RESET_FIFO_READ:
+			iowrite32_quick(arg, (cfg_dev->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
+			status = 0;
+			break;
+		default:
+			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
+			status = -ENOTTY;
+	}
+
+	return status;
+}
+
 static struct file_operations dyplo_cfg_fops =
 {
 	.owner = THIS_MODULE,
@@ -655,6 +711,7 @@ static struct file_operations dyplo_cfg_fops =
 	.write = dyplo_cfg_write,
 	.llseek = dyplo_cfg_llseek,
 	.mmap = dyplo_cfg_mmap,
+	.unlocked_ioctl = dyplo_cfg_ioctl,
 	.open = dyplo_cfg_open,
 	.release = dyplo_cfg_release,
 };

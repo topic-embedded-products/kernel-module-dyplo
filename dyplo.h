@@ -87,12 +87,12 @@
 /* Actual fill level */
 #define DYPLO_REG_FIFO_WRITE_LEVEL_BASE	0x300
 
+#define DYPLO_REG_FIFO_RESET_WRITE	0x54
+#define DYPLO_REG_FIFO_RESET_READ	0x58
+
 /* Queue sizes in words */
 #define DYPLO_FIFO_WRITE_SIZE	255
 #define DYPLO_FIFO_READ_SIZE	255
-
-#define DYPLO_NUMBER_OF_CPU_NODE_FIFOS_MAX	32
-#define DYPLO_NUMBER_OF_OTHER_NODE_FIFOS	4
 
 /* Hack: Write with burst doesn't work, limit to <32 bytes per call */
 #define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	DYPLO_FIFO_MEMORY_SIZE
@@ -124,8 +124,12 @@ struct dyplo_route_t  {
 #define DYPLO_IOC_BACKPLANE_DISABLE	0x09
 #define DYPLO_IOC_BACKPLANE_ENABLE	0x0A
 
+#define DYPLO_IOC_RESET_FIFO_WRITE	0x0C
+#define DYPLO_IOC_RESET_FIFO_READ	0x0D
+
 #define DYPLO_IOC_TRESHOLD_QUERY	0x10
 #define DYPLO_IOC_TRESHOLD_TELL	0x11
+
 
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
@@ -154,3 +158,8 @@ struct dyplo_route_t  {
  * tuning for low latency or reduced interrupt rate. */
 #define DYPLO_IOCQTRESHOLD   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_TRESHOLD_QUERY)
 #define DYPLO_IOCTTRESHOLD   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_TRESHOLD_TELL)
+/* Reset FIFO data (i.e. throw it away). Can be applied to config
+ * nodes to reset its incoming fifos (argument is bitmask for queues to
+ * reset), or to a CPU read/write fifo (argument ignored). */
+#define DYPLO_IOCRESET_FIFO_WRITE	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_RESET_FIFO_WRITE)
+#define DYPLO_IOCRESET_FIFO_READ	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_RESET_FIFO_READ)

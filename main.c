@@ -915,6 +915,15 @@ static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 				arg = 192;
 			fifo_dev->poll_treshold = arg;
 			return 0;
+		/* ioctl value or type does not matter, this always resets the
+		 * associated fifo in the hardware. */
+		case DYPLO_IOC_RESET_FIFO_WRITE:
+		case DYPLO_IOC_RESET_FIFO_READ:
+			if ((filp->f_mode & FMODE_WRITE) != 0)
+				iowrite32_quick(1 << fifo_dev->index, (fifo_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_WRITE/4)));
+			else
+				iowrite32_quick(1 << fifo_dev->index, (fifo_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
+			return 0;
 		default:
 			return -ENOTTY;
 	}

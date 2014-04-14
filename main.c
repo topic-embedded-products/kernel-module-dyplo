@@ -203,7 +203,7 @@ static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
 	/* EOF when past our area */
 	if (*f_pos >= DYPLO_CONFIG_SIZE)
 		return 0;
-	
+
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
 	if ((offset + count) > DYPLO_CONFIG_SIZE)
@@ -437,7 +437,7 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 	/* pr_debug("%s(%x, %lx)\n", __func__, cmd, arg); */
 	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
 		return -ENOTTY;
-	
+
 	/* Verify read/write access to user memory early on */
 	if (_IOC_DIR(cmd) & _IOC_READ) 	{
 		/* IOC and VERIFY use different perspectives, hence the "WRITE" and "READ" confusion */
@@ -522,7 +522,7 @@ static int dyplo_cfg_open(struct inode *inode, struct file *filp)
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
 	/* Allow only one open, or one R and one W */
-	
+
 	if (rw_mode & cfg_dev->open_mode) {
 		status = -EBUSY;
 		goto exit_open;
@@ -557,7 +557,7 @@ static ssize_t dyplo_cfg_read(struct file *filp, char __user *buf, size_t count,
 	/* EOF when past our area */
 	if (*f_pos >= DYPLO_CONFIG_SIZE)
 		return 0;
-	
+
 	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
 	count &= ~0x03;
 	if ((offset + count) > DYPLO_CONFIG_SIZE)
@@ -657,7 +657,7 @@ static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 {
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
 	int status;
-	
+
 	if (unlikely(cfg_dev == NULL))
 		return -ENODEV;
 	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
@@ -744,7 +744,7 @@ static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, in
 		thd = (DYPLO_FIFO_READ_SIZE*2)/4;
 	else if (thd)
 		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
-	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd, 
+	pr_debug("%s index=%d thd=%d mask=%x\n", __func__, index, thd,
 		*(control_base + (DYPLO_REG_FIFO_READ_IRQ_MASK>>2)));
 	iowrite32(thd, control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index);
 	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2));
@@ -798,7 +798,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 		return -EINVAL;
 
 	count &= ~0x03; /* Align to words */
-	
+
 	if (!access_ok(VERIFY_WRITE, buf, count))
 		return -EFAULT;
 
@@ -879,7 +879,7 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	unsigned int mask;
-	
+
 	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
 	if (dyplo_fifo_read_level(fifo_dev))
 		mask = (POLLIN | POLLRDNORM); /* Data available */
@@ -972,7 +972,7 @@ static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_write);
 	int index = iminor(inode) - dev->number_of_config_devices - 1;
 	struct dyplo_fifo_dev *fifo_dev = &dev->fifo_write_devices[index];
-	
+
 	if (filp->f_mode & FMODE_READ) /* write-only device */
 		return -EINVAL;
 
@@ -1175,7 +1175,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		dev_err(&pdev->dev, "IRQ resource missing\n");
 		return -ENOENT;
 	}
-	
+
 	number_of_write_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_WRITE_COUNT>>2));
 	number_of_read_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_READ_COUNT>>2));
 	dev->number_of_fifo_write_devices = number_of_write_fifos;
@@ -1199,7 +1199,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 	if (retval) {
 		goto error_register_chrdev_region;
 	}
-	
+
 	cdev_init(&dev->cdev_fifo_write, &dyplo_fifo_write_fops);
 	dev->cdev_fifo_write.owner = THIS_MODULE;
 	retval = cdev_add(&dev->cdev_fifo_write,
@@ -1224,7 +1224,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		fifo_dev->index = i;
 		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
 		device = device_create(dev->class, &pdev->dev,
-			first_fifo_devt + fifo_index, 
+			first_fifo_devt + fifo_index,
 			fifo_dev, DRIVER_FIFO_WRITE_NAME, i);
 		if (IS_ERR(device)) {
 			dev_err(&pdev->dev, "unable to create fifo write device %d\n",
@@ -1241,7 +1241,7 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		fifo_dev->index = i;
 		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
 		device = device_create(dev->class, &pdev->dev,
-			first_fifo_devt + fifo_index, 
+			first_fifo_devt + fifo_index,
 			fifo_dev, DRIVER_FIFO_READ_NAME, i);
 		if (IS_ERR(device)) {
 			dev_err(&pdev->dev, "unable to create fifo read device %d\n",
@@ -1448,7 +1448,7 @@ static int dyplo_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "cdev_add(cfg) failed\n");
 		goto failed_cdev;
 	}
-	
+
 	dev->class = class_create(THIS_MODULE, DRIVER_CLASS_NAME);
 	if (IS_ERR(dev->class)) {
 		dev_err(&pdev->dev, "failed to create class\n");
@@ -1468,16 +1468,16 @@ static int dyplo_probe(struct platform_device *pdev)
 
 	while (device_index < dev->number_of_config_devices)
 	{
-		struct dyplo_config_dev* cfg_dev = 
+		struct dyplo_config_dev* cfg_dev =
 				&dev->config_devices[device_index];
 		cfg_dev->parent = dev;
 		cfg_dev->base =
 			(dev->base + ((DYPLO_CONFIG_SIZE>>2) * (device_index + 1)));
 		cfg_dev->control_base =
 			(dev->base + ((DYPLO_NODE_REG_SIZE>>2) * (device_index + 1)));
-			
+
 		device = device_create(dev->class, &pdev->dev,
-			devt + 1 + device_index, 
+			devt + 1 + device_index,
 			cfg_dev, DRIVER_CONFIG_NAME, device_index);
 		if (IS_ERR(device)) {
 			dev_err(&pdev->dev, "unable to create config device %d\n",
@@ -1503,7 +1503,7 @@ static int dyplo_probe(struct platform_device *pdev)
 		(2 << dev->number_of_config_devices) - 1;
 
 	return 0;
-		
+
 failed_device_create_cfg:
 	while (device_index) {
 		device_destroy(dev->class, dev->devt + 1 + device_index);
@@ -1523,11 +1523,11 @@ static int dyplo_remove(struct platform_device *pdev)
 {
 	struct dyplo_dev *dev;
 	int i;
-	
+
 	dev = dev_get_drvdata(&pdev->dev);
 	if (!dev)
 		return -ENODEV;
-	
+
 	remove_proc_entry(DRIVER_CLASS_NAME, NULL);
 
 	for (i = dev->number_of_config_devices +

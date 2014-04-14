@@ -1128,13 +1128,20 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	int index;
 	u32 mask;
 
-	u32 write_status_reg = *(cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_STATUS>>2));
-	u32 read_status_reg = *(cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_STATUS>>2));
+	u32 write_status_reg = ioread32_quick(
+		cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_STATUS>>2));
+	u32 read_status_reg = ioread32_quick(
+		cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_STATUS>>2));
+	/* Allow IRQ sharing and tell kernel when no action taken */
+	if (!write_status_reg && !read_status_reg)
+		return IRQ_NONE;
 	/* Acknowledge the interrupt by clearing all flags that we've seen */
 	if (write_status_reg)
-		iowrite32(write_status_reg, cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2));
+		iowrite32_quick(write_status_reg,
+			cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2));
 	if (read_status_reg)
-		iowrite32(read_status_reg, cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2));
+		iowrite32_quick(read_status_reg,
+			cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2));
 	pr_debug("%s(status=0x%x 0x%x)\n", __func__,
 			write_status_reg, read_status_reg);
 	/* Trigger the associated wait queues, "read" queues first */

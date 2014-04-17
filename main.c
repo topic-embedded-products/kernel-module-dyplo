@@ -3,7 +3,7 @@
  *
  * Dyplo loadable kernel module.
  *
- * (C) Copyright 2013,2014 Topic Embedded Products B.V. <Mike Looijmans> (http://www.topic.nl).
+ * (C) Copyright 2013,2014 Topic Embedded Products B.V. (http://www.topic.nl).
  * All rights reserved.
  *
  * This file is part of kernel-module-dyplo.
@@ -47,7 +47,7 @@
 #include "dyplo.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Mike Looijmans <mike.looijmans@topic.nl>");
+MODULE_AUTHOR("Topic Embedded Products <www.topic.nl>");
 
 /* When defined, copies data directly to/from user space instead of
  * bouncing via an intermediate kernel buffer. */

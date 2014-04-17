@@ -3,7 +3,7 @@
  *
  * Dyplo loadable kernel module.
  *
- * (C) Copyright 2013,2014 Topic Embedded Products B.V. <Mike Looijmans> (http://www.topic.nl).
+ * (C) Copyright 2013,2014 Topic Embedded Products B.V. (http://www.topic.nl).
  * All rights reserved.
  *
  * This file is part of kernel-module-dyplo.

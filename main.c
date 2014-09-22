@@ -1343,13 +1343,19 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
 		int queue_index;
-		int __iomem *ctl_base = dev->config_devices[ctl_index].control_base;
-		int __iomem *ctl_route_base = ctl_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		struct dyplo_config_dev *cfg_dev =
+				&dev->config_devices[ctl_index];
+		int __iomem *ctl_base = cfg_dev->control_base;
+		int __iomem *ctl_route_base =
+				ctl_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		const int number_of_fifos_out =
-			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
+				dyplo_number_of_output_queues(cfg_dev);
 		const int number_of_fifos_in =
-			dyplo_number_of_input_queues(&dev->config_devices[ctl_index]);
-		seq_printf(m, "ctl_index=%d id=%#x fifos in=%d out=%d\n", ctl_index,
+				dyplo_number_of_input_queues(cfg_dev);
+		seq_printf(m, "ctl_index=%d (%c%c) id=%#x fifos in=%d out=%d\n",
+				ctl_index,
+				(cfg_dev->open_mode & FMODE_READ) ? 'r' : '-',
+				(cfg_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
 				ioread32_quick(ctl_base + (DYPLO_REG_ID>>2)),
 				number_of_fifos_in, number_of_fifos_out);
 		for (queue_index = 0; queue_index < number_of_fifos_out; ++queue_index)

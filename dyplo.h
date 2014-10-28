@@ -112,6 +112,7 @@ struct dyplo_route_t  {
 	struct dyplo_route_item_t* proutes;
 };
 
+#define DYPLO_STREAM_ID_WIDTH 3
 
 #define DYPLO_IOC_MAGIC	'd'
 #define DYPLO_IOC_ROUTE_CLEAR	0x00

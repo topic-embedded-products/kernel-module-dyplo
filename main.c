@@ -25,6 +25,7 @@
  * You can contact Topic by electronic mail via info@topic.nl or via
  * paper mail at the following address: Postbus 440, 5680 AK Best, The Netherlands.
  */
+
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
@@ -278,7 +279,7 @@ static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
 			if (ctl_route_base_out[queue_index] == route) {
-				pr_debug("removed route %d,%d->%d,%d\n", ctl_index, queue_index, (route>>5)-1, route&0x1f);
+				pr_debug("removed route %d,%d->%d,%d\n", ctl_index, queue_index, (route >> DYPLO_STREAM_ID_WIDTH) - 1, route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1) );
 				ctl_route_base_out[queue_index] = 0;
 			}
 		}
@@ -298,7 +299,7 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 		pr_debug("%s: Invalid source or destination\n", __func__);
 	    return -EINVAL;
 	}
-	dst_route = ((route.dstNode+1) << 5) | route.dstFifo;
+	dst_route = ((route.dstNode + 1) << DYPLO_STREAM_ID_WIDTH) | route.dstFifo;
 	dyplo_ctl_route_remove_dst(dev, dst_route);
 	/* Setup route. The PL assumes that "0" is the control node, hence
 	 * the "+1" in config node indices */
@@ -352,10 +353,10 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 			unsigned int route = ctl_route_base[queue_index];
 			if (route)
 			{
-				int src_ctl_index = route >> 5;
+				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & 0x1F;
+					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
 					if (nr >= routes.n_routes)
 						return nr; /* No room for more, quit */
 					route = (ctl_index << 24) | (queue_index << 16) | ((src_ctl_index-1) << 8) | (src_index);
@@ -375,7 +376,7 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 {
 	int queue_index;
 	int ctl_index;
-	const int match = (ctl_index_to_delete+1) << 5;
+	const int match = (ctl_index_to_delete + 1) << DYPLO_STREAM_ID_WIDTH;
 	const int number_of_fifos =
 		dyplo_number_of_output_queues(&dev->config_devices[ctl_index_to_delete]);
 	int __iomem *ctl_route_base_out = dev->config_devices[ctl_index_to_delete].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
@@ -390,7 +391,7 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if ((ctl_route_base_out[queue_index] & 0xFFE0) == match) {
+			if ((ctl_route_base_out[queue_index] & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match) {
 				ctl_route_base_out[queue_index] = 0;
 			}
 		}
@@ -403,7 +404,7 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if ((ctl_route_base_out[queue_index] & 0xFFE0) == match) {
+			if ((ctl_route_base_out[queue_index] & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match) {
 				ctl_route_base_out[queue_index] = 0;
 			}
 		}
@@ -1363,10 +1364,10 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 			unsigned int route = ctl_route_base[queue_index];
 			if (route)
 			{
-				int src_ctl_index = route >> 5;
+				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & 0x1F;
+					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
 					seq_printf(m, "route %d,%d -> %d,%d\n",
 						ctl_index, queue_index, src_ctl_index-1, src_index);
 				}

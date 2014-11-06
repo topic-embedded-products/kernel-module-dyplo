@@ -1414,10 +1414,10 @@ static int dyplo_probe(struct platform_device *pdev)
 	sema_init(&dev->fop_sem, 1);
 
 	dev->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dev->base = devm_request_and_ioremap(&pdev->dev, dev->mem);
-	if (!dev->base) {
+	dev->base = devm_ioremap_resource(&pdev->dev, dev->mem);
+	if (IS_ERR(dev->base)) {
 		dev_err(&pdev->dev, "Failed to map device memory\n");
-		return -ENXIO;
+		return PTR_ERR(dev->base);
 	}
 
 	control_id = *(dev->base + (DYPLO_REG_ID>>2));

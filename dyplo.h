@@ -45,6 +45,8 @@
 #define DYPLO_REG_BACKPLANE_ENABLE_SET	0x14
 #define DYPLO_REG_BACKPLANE_ENABLE_CLR	0x18
 
+# define DYPLO_REG_CONTROL_DYPLO_VERSION	0x30
+
 #define DYPLO_REG_NODE_INDEX	0x40
 #define DYPLO_REG_CONTROL_CPU_NODES_COUNT	0x44
 #define DYPLO_REG_CONTROL_IO_NODES_COUNT	0x48
@@ -111,8 +113,6 @@ struct dyplo_route_t  {
 	unsigned int n_routes;
 	struct dyplo_route_item_t* proutes;
 };
-
-#define DYPLO_STREAM_ID_WIDTH 3
 
 #define DYPLO_IOC_MAGIC	'd'
 #define DYPLO_IOC_ROUTE_CLEAR	0x00

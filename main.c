@@ -99,6 +99,7 @@ struct dyplo_dev
 	u32 __iomem *base;
 	int irq;
 	int number_of_config_devices;
+	unsigned int stream_id_width;
 	struct dyplo_config_dev *config_devices;
 	int number_of_fifo_write_devices;
 	struct dyplo_fifo_dev *fifo_write_devices;
@@ -279,7 +280,10 @@ static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
 			if (ctl_route_base_out[queue_index] == route) {
-				pr_debug("removed route %d,%d->%d,%d\n", ctl_index, queue_index, (route >> DYPLO_STREAM_ID_WIDTH) - 1, route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1) );
+				pr_debug("removed route %d,%d->%d,%d\n",
+					ctl_index, queue_index,
+					(route >> dev->stream_id_width) - 1,
+					route & ((0x1 << dev->stream_id_width) - 1));
 				ctl_route_base_out[queue_index] = 0;
 			}
 		}
@@ -299,7 +303,7 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 		pr_debug("%s: Invalid source or destination\n", __func__);
 	    return -EINVAL;
 	}
-	dst_route = ((route.dstNode + 1) << DYPLO_STREAM_ID_WIDTH) | route.dstFifo;
+	dst_route = ((route.dstNode + 1) << dev->stream_id_width) | route.dstFifo;
 	dyplo_ctl_route_remove_dst(dev, dst_route);
 	/* Setup route. The PL assumes that "0" is the control node, hence
 	 * the "+1" in config node indices */
@@ -353,10 +357,10 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 			unsigned int route = ctl_route_base[queue_index];
 			if (route)
 			{
-				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
+				int src_ctl_index = route >> dev->stream_id_width;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
+					int src_index = route & ( (0x1 << dev->stream_id_width) - 1);
 					if (nr >= routes.n_routes)
 						return nr; /* No room for more, quit */
 					route = (ctl_index << 24) | (queue_index << 16) | ((src_ctl_index-1) << 8) | (src_index);
@@ -376,7 +380,7 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 {
 	int queue_index;
 	int ctl_index;
-	const int match = (ctl_index_to_delete + 1) << DYPLO_STREAM_ID_WIDTH;
+	const int match = (ctl_index_to_delete + 1) << dev->stream_id_width;
 	const int number_of_fifos =
 		dyplo_number_of_output_queues(&dev->config_devices[ctl_index_to_delete]);
 	int __iomem *ctl_route_base_out = dev->config_devices[ctl_index_to_delete].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
@@ -391,7 +395,7 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if ((ctl_route_base_out[queue_index] & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match) {
+			if ((ctl_route_base_out[queue_index] & (0xFFFF << dev->stream_id_width) ) == match) {
 				ctl_route_base_out[queue_index] = 0;
 			}
 		}
@@ -404,7 +408,7 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if ((ctl_route_base_out[queue_index] & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match) {
+			if ((ctl_route_base_out[queue_index] & (0xFFFF << dev->stream_id_width) ) == match) {
 				ctl_route_base_out[queue_index] = 0;
 			}
 		}
@@ -1364,10 +1368,10 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 			unsigned int route = ctl_route_base[queue_index];
 			if (route)
 			{
-				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
+				int src_ctl_index = route >> dev->stream_id_width;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
+					int src_index = route & ( (0x1 << dev->stream_id_width) - 1);
 					seq_printf(m, "route %d,%d -> %d,%d\n",
 						ctl_index, queue_index, src_ctl_index-1, src_index);
 				}
@@ -1405,6 +1409,7 @@ static int dyplo_probe(struct platform_device *pdev)
 	int retval;
 	int device_index;
 	u32 control_id;
+	u32 dyplo_version;
 	struct proc_dir_entry *proc_file_entry;
 
 	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
@@ -1427,6 +1432,14 @@ static int dyplo_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "Bad device ID: 0x%x\n", control_id);
 		return -EINVAL;
 	}
+
+	dyplo_version = ioread32_quick(dev->base + (DYPLO_REG_CONTROL_DYPLO_VERSION>>2));
+	dev_info(&pdev->dev, "Dyplo version %d.%d.%d\n",
+		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF, dyplo_version & 0xFF);
+	if (dyplo_version > 0x7DE0101)
+		dev->stream_id_width = 3;
+	else
+		dev->stream_id_width = 5;
 
 	dev->number_of_config_devices =
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_CPU_NODES_COUNT>>2)) +

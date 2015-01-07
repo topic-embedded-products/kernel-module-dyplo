@@ -53,6 +53,8 @@
 #define DYPLO_REG_CONTROL_PR_NODES_COUNT	0x4C
 #define DYPLO_REG_CONTROL_FIXED_NODES_COUNT	0x50
 #define DYPLO_REG_CONTROL_CONNECT_LANES_COUNT	0x54
+#define DYPLO_REG_CONTROL_LICENSE_VALID	0x68
+
 
 /* Size of the global configuration map for each node */
 #define DYPLO_NODE_REG_SIZE	0x800
@@ -88,6 +90,15 @@
 #define DYPLO_REG_FIFO_WRITE_THD_BASE	0x280
 /* Actual fill level */
 #define DYPLO_REG_FIFO_WRITE_LEVEL_BASE	0x300
+/* Extra user signal bits */
+#define DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE	0x400
+
+/* user signal values used by driver */
+#define DYPLO_USERSIGNAL_ZERO	0
+#define DYPLO_USERSIGNAL_BYTES1	1
+#define DYPLO_USERSIGNAL_BYTES2	2
+#define DYPLO_USERSIGNAL_BYTES3	3
+#define DYPLO_USERSIGNAL_EOF	4
 
 #define DYPLO_REG_FIFO_RESET_WRITE	0x54
 #define DYPLO_REG_FIFO_RESET_READ	0x58

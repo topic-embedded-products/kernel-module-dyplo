@@ -83,6 +83,8 @@ struct dyplo_fifo_dev
 	int index;
 	unsigned int words_transfered;
 	unsigned int poll_treshold;
+	u16 user_signal;
+	bool eof;
 	bool is_open;
 };
 
@@ -729,13 +731,13 @@ static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
 		cfg_dev->base + (fifo_dev->index * (DYPLO_FIFO_MEMORY_SIZE>>2));
 }
 
-static int dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
+static u32 dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 {
 	int index = fifo_dev->index;
 	int __iomem *control_base =
 		fifo_dev->config_parent->control_base;
 	int result = ioread32_quick(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
-	pr_debug("%s index=%d result=%d @ %p\n", __func__, index, result,
+	pr_debug("%s index=%d result=%#x @ %p\n", __func__, index, result,
 		(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index));
 	return result;
 }
@@ -764,6 +766,9 @@ static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 	 * there and continues into the fifo_read_devices */
 	struct dyplo_fifo_dev *fifo_dev = &dev->fifo_write_devices[index];
 
+	pr_debug("%s index=%d mode=%#x flags=%#x\n", __func__,
+		index, filp->f_mode, filp->f_flags);
+
 	if (filp->f_mode & FMODE_WRITE) /* read-only device */
 		return -EINVAL;
 	if (down_interruptible(&dev->fop_sem))
@@ -772,9 +777,12 @@ static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 		result = -EBUSY;
 		goto error;
 	}
+	fifo_dev->user_signal = 0;
+	fifo_dev->eof = false;
 	fifo_dev->is_open = true;
 	fifo_dev->poll_treshold = 1;
 	filp->private_data = fifo_dev;
+	nonseekable_open(inode, filp);
 error:
 	up(&dev->fop_sem);
 	return result;
@@ -783,6 +791,18 @@ error:
 static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
+	if (!fifo_dev->eof) {
+		/* We haven't seen any EOF sentinel yet, see if it's there and
+		 * consume it when present */
+		u32 words_available = dyplo_fifo_read_level(fifo_dev);
+		u16 user_signal = words_available >> 16;
+		words_available &= 0xFFFF;
+		if (words_available && (user_signal == DYPLO_USERSIGNAL_EOF)) {
+			ioread32_quick(dyplo_fifo_memory_location(fifo_dev));
+			pr_debug("%s consume extra EOF sentinel\n", __func__);
+		}
+	}
 	fifo_dev->is_open = false;
 	return 0;
 }
@@ -799,6 +819,9 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 #endif
 	pr_debug("%s(%d)\n", __func__, count);
 
+	if (fifo_dev->eof)
+		return 0; /* Indicate end of file once sentinel received */
+
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
 
@@ -809,10 +832,13 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 
 	while (count)
 	{
-		int words_available;
+		u32 words_available;
+		u16 user_signal;
 		size_t bytes;
 		if (filp->f_flags & O_NONBLOCK) {
 			words_available = dyplo_fifo_read_level(fifo_dev);
+			user_signal = words_available >> 16;
+			words_available &= 0xFFFF; /* Lower 16-bits only */
 			if (!words_available) {
 				/* Non-blocking IO, return what we have */
 				if (len)
@@ -821,14 +847,39 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 				status = -EAGAIN;
 				goto error;
 			}
+			/* user_signal is valid because words_available is non-nul */
+			if (user_signal != fifo_dev->user_signal) {
+				fifo_dev->user_signal = user_signal;
+				if (user_signal == DYPLO_USERSIGNAL_EOF) {
+					pr_debug("%s: Got EOF\n", __func__);
+					fifo_dev->eof = true;
+					ioread32_quick(mapped_memory); /* Fetch sentinel */
+					break;
+				}
+				goto exit_ok;
+			}
 		}
 		else {
 			DEFINE_WAIT(wait);
 			for (;;) {
 				prepare_to_wait(&fifo_dev->fifo_wait_queue, &wait, TASK_INTERRUPTIBLE);
 				words_available = dyplo_fifo_read_level(fifo_dev);
-				if (words_available)
+				user_signal = words_available >> 16;
+				words_available &= 0xFFFF;
+				if (words_available) {
+					/* usersignal is only valid when there is data */
+					if (user_signal != fifo_dev->user_signal) {
+						fifo_dev->user_signal = user_signal;
+						if (user_signal == DYPLO_USERSIGNAL_EOF) {
+							pr_debug("%s: Got EOF\n", __func__);
+							fifo_dev->eof = true;
+							ioread32_quick(mapped_memory); /* Fetch sentinel */
+						}
+						finish_wait(&fifo_dev->fifo_wait_queue, &wait);
+						goto exit_ok;
+					}
 					break; /* Done waiting */
+				}
 				if (!signal_pending(current)) {
 					dyplo_fifo_read_enable_interrupt(fifo_dev, count >> 2);
 					schedule();
@@ -872,7 +923,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 		}
 		while (words_available);
 	}
-
+exit_ok:
 	status = len;
 	*f_pos += len;
 error:
@@ -886,7 +937,7 @@ static unsigned int dyplo_fifo_read_poll(struct file *filp, poll_table *wait)
 	unsigned int mask;
 
 	poll_wait(filp, &fifo_dev->fifo_wait_queue, wait);
-	if (dyplo_fifo_read_level(fifo_dev))
+	if (fifo_dev->eof || (dyplo_fifo_read_level(fifo_dev) & 0xFFFF))
 		mask = (POLLIN | POLLRDNORM); /* Data available */
 	else {
 		/* Set IRQ to occur on user-defined treshold (default=1) */
@@ -971,12 +1022,26 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2));
 }
 
+static bool dyplo_fifo_write_usersignal(struct dyplo_fifo_dev *fifo_dev, u16 user_signal)
+{
+	__iomem int *control_base_us =
+		fifo_dev->config_parent->control_base +
+		(DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) +
+		fifo_dev->index;
+	iowrite32((u32)user_signal, control_base_us);
+	/* Test if user signals are supported by reading back the value */
+	return (u16)ioread32_quick(control_base_us) == user_signal;
+}
+
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 {
 	int result = 0;
 	struct dyplo_dev *dev = container_of(inode->i_cdev, struct dyplo_dev, cdev_fifo_write);
 	int index = iminor(inode) - dev->number_of_config_devices - 1;
 	struct dyplo_fifo_dev *fifo_dev = &dev->fifo_write_devices[index];
+	
+	pr_debug("%s index=%d mode=%#x flags=%#x\n", __func__,
+		index, filp->f_mode, filp->f_flags);
 
 	if (filp->f_mode & FMODE_READ) /* write-only device */
 		return -EINVAL;
@@ -987,9 +1052,19 @@ static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 		result = -EBUSY;
 		goto error;
 	}
-	fifo_dev->is_open = true;
 	fifo_dev->poll_treshold = DYPLO_FIFO_WRITE_SIZE / 2;
 	filp->private_data = fifo_dev;
+	fifo_dev->user_signal = DYPLO_USERSIGNAL_ZERO;
+	fifo_dev->eof = false;
+	/* Set user signal register */
+	if (!dyplo_fifo_write_usersignal(fifo_dev, DYPLO_USERSIGNAL_ZERO)) {
+		printk(KERN_ERR "%s: Failed to reset usersignals on w%d\n",
+			__func__, index);
+		result = -EIO;
+		goto error;
+	}
+	fifo_dev->is_open = true;
+	nonseekable_open(inode, filp);
 error:
 	up(&dev->fop_sem);
 	return result;
@@ -998,8 +1073,43 @@ error:
 static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	int status = 0;
+
+	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
+	/* Setting O_APPEND mode prevents sending a EOF on close, which
+	 * is not quite intuitive but convenient. */
+	if (!fifo_dev->eof &&
+		((filp->f_flags & O_APPEND) == 0) &&
+		dyplo_fifo_write_usersignal(fifo_dev, DYPLO_USERSIGNAL_EOF)) {
+		/* Transfer the EOF sentinel, we may need to wait for available
+		 * space in the outgoing fifo. */
+		u32 words_available;
+		DEFINE_WAIT(wait);
+		for (;;) {
+			prepare_to_wait(&fifo_dev->fifo_wait_queue, &wait, TASK_INTERRUPTIBLE);
+			words_available = dyplo_fifo_write_level(fifo_dev);
+			if (words_available)
+				break; /* Done waiting */
+			pr_debug("%s: Waiting to send EOF sentinel\n", __func__);
+			if (!signal_pending(current)) {
+				dyplo_fifo_write_enable_interrupt(fifo_dev, 1);
+				schedule();
+				continue;
+			}
+			status = -ERESTARTSYS;
+			break;
+		}
+		finish_wait(&fifo_dev->fifo_wait_queue, &wait);
+		if (status)
+			goto error;
+		pr_debug("%s: Send EOF sentinel\n", __func__);
+		iowrite32_quick(0, dyplo_fifo_memory_location(fifo_dev));
+		fifo_dev->eof = true;
+	} else
+		pr_debug("%s: EOF sentinel not sent\n", __func__);
+error:
 	fifo_dev->is_open = false;
-	return 0;
+	return status;
 }
 
 static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf, size_t count,
@@ -1323,8 +1433,11 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 		if (i < dev->number_of_fifo_write_devices) {
 			int lw = dyplo_fifo_write_level(&dev->fifo_write_devices[i]);
 			int tw = *(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + i);
-			seq_printf(m, "w=%3d (%3d%c%c) ",
-				lw, tw, irq_w_mask & mask ? 'w' : '.', irq_w_status & mask ? 'i' : '.');
+			int us = *(control_base + (DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) + i);
+			seq_printf(m, "w=%3d %x (%3d%c%c) ",
+				lw, us, tw,
+				irq_w_mask & mask ? 'w' : '.',
+				irq_w_status & mask ? 'i' : '.');
 			tr_w = dev->fifo_write_devices[i].words_transfered;
 		}
 		else {
@@ -1332,10 +1445,12 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 			tr_w = 0;
 		}
 		if (i < dev->number_of_fifo_read_devices) {
-			int lr = dyplo_fifo_read_level(&dev->fifo_read_devices[i]);
+			u32 lr = dyplo_fifo_read_level(&dev->fifo_read_devices[i]);
 			int tr = *(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + i);
-			seq_printf(m, "r=%3d (%3d%c%c) ",
-				lr, tr, irq_r_mask & mask ? 'w' : '.', irq_r_status & mask ? 'i' : '.');
+			seq_printf(m, "r=%3d %x (%3d%c%c) ",
+				lr & 0xFFFF, lr >> 16, tr,
+				irq_r_mask & mask ? 'w' : '.',
+				irq_r_status & mask ? 'i' : '.');
 			tr_r = dev->fifo_read_devices[i].words_transfered;
 		}
 		else {
@@ -1385,6 +1500,9 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 		dev->base[DYPLO_REG_AXI_COUNTER_BASE/4],
 		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+0],
 		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+1]);
+	
+	if (!dev->base[DYPLO_REG_CONTROL_LICENSE_VALID/4])
+		seq_printf(m, "WARNING: License expired!\n");
 	return 0;
 }
 

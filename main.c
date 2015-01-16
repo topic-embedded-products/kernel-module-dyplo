@@ -1235,11 +1235,9 @@ static struct file_operations dyplo_fifo_write_fops =
 };
 
 
-/* Interrupt service routine */
-static irqreturn_t dyplo_isr(int irq, void *dev_id)
+/* Interrupt service routine for one node */
+static irqreturn_t dyplo_fifo_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
 {
-	struct dyplo_config_dev *cfg_dev = dev_id;
-	struct dyplo_dev *dev = cfg_dev->parent;
 	int index;
 	u32 mask;
 
@@ -1273,6 +1271,25 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static irqreturn_t dyplo_isr(int irq, void *dev_id)
+{
+	struct dyplo_dev *dev = (struct dyplo_dev*)dev_id;
+	u32 mask;
+	int index = 0;
+	irqreturn_t result = IRQ_NONE;
+
+	mask = ioread32_quick(dev->base + (DYPLO_REG_CONTROL_IRQ_MASK>>2));
+	pr_debug("%s(mask=0x%x)\n", __func__, mask);
+	while (mask) {
+		mask >>= 1; /* CPU node is '0', ctl doesn't need interrupt */
+		if (mask & 1)
+			if (dyplo_fifo_isr(dev, &dev->config_devices[index]) != IRQ_NONE)
+				result = IRQ_HANDLED;
+		++index;
+	}
+	return result;
+}
+
 static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_dev *cfg_dev)
 {
 	int retval;
@@ -1290,12 +1307,6 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 	if (dev->number_of_fifo_read_devices || dev->number_of_fifo_write_devices) {
 		dev_err(&pdev->dev, "Fifo's already registered\n");
 		return -EBUSY;
-	}
-
-	dev->irq = platform_get_irq(pdev, 0);
-	if (dev->irq < 0) {
-		dev_err(&pdev->dev, "IRQ resource missing\n");
-		return -ENOENT;
 	}
 
 	number_of_write_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_WRITE_COUNT>>2));
@@ -1374,17 +1385,10 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		++fifo_index;
 	}
 
-	/* Connect IRQ with this cfg_dev */
-	retval = request_irq(dev->irq, dyplo_isr, 0, pdev->name, cfg_dev);
-	if (retval) {
-		dev_err(&pdev->dev, "Cannot claim IRQ\n");
-		goto failed_request_irq;
-	}
 	dev->fifo_config_device = cfg_dev;
 
 	return 0;
 
-failed_request_irq:
 failed_device_create:
 	while (fifo_index) {
 		device_destroy(dev->class, first_fifo_devt + fifo_index);
@@ -1536,11 +1540,17 @@ static int dyplo_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, dev);
 	sema_init(&dev->fop_sem, 1);
 
+	/* resource configuration */
 	dev->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	dev->base = devm_ioremap_resource(&pdev->dev, dev->mem);
 	if (IS_ERR(dev->base)) {
 		dev_err(&pdev->dev, "Failed to map device memory\n");
 		return PTR_ERR(dev->base);
+	}
+	dev->irq = platform_get_irq(pdev, 0);
+	if (dev->irq < 0) {
+		dev_err(&pdev->dev, "IRQ resource missing\n");
+		return -ENOENT;
 	}
 
 	control_id = *(dev->base + (DYPLO_REG_ID>>2));
@@ -1611,6 +1621,12 @@ static int dyplo_probe(struct platform_device *pdev)
 		goto failed_device_create;
 	}
 
+	retval = request_irq(dev->irq, dyplo_isr, 0, pdev->name, dev);
+	if (retval) {
+		dev_err(&pdev->dev, "Cannot claim IRQ\n");
+		goto failed_request_irq;
+	}
+
 	while (device_index < dev->number_of_config_devices)
 	{
 		struct dyplo_config_dev* cfg_dev =
@@ -1654,8 +1670,8 @@ failed_device_create_cfg:
 		device_destroy(dev->class, dev->devt + 1 + device_index);
 		--device_index;
 	}
-	if (dev->fifo_config_device)
-		free_irq(dev->irq, dev->fifo_config_device);
+	free_irq(dev->irq, dev);
+failed_request_irq:
 failed_device_create:
 	class_destroy(dev->class);
 failed_class:
@@ -1682,8 +1698,7 @@ static int dyplo_remove(struct platform_device *pdev)
 	class_destroy(dev->class);
 	unregister_chrdev_region(dev->devt, 1 + dev->number_of_config_devices +
 		dev->number_of_fifo_write_devices + dev->number_of_fifo_read_devices);
-	if (dev->fifo_config_device)
-		free_irq(dev->irq, dev->fifo_config_device);
+	free_irq(dev->irq, dev);
 	return 0;
 }
 

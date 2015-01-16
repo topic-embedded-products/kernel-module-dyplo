@@ -1192,8 +1192,8 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 	number_of_read_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_READ_COUNT>>2));
 	dev->number_of_fifo_write_devices = number_of_write_fifos;
 	dev->number_of_fifo_read_devices = number_of_read_fifos;
-	dev->fifo_write_devices = devm_kzalloc(&pdev->dev,
-		(number_of_write_fifos + number_of_read_fifos) * sizeof(struct dyplo_fifo_dev),
+	dev->fifo_write_devices = devm_kcalloc(&pdev->dev,
+		number_of_write_fifos + number_of_read_fifos, sizeof(struct dyplo_fifo_dev),
 		GFP_KERNEL);
 	if (!dev->fifo_write_devices) {
 		dev_err(&pdev->dev, "No memory for %d fifo devices\n",
@@ -1446,8 +1446,8 @@ static int dyplo_probe(struct platform_device *pdev)
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_IO_NODES_COUNT>>2)) +
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_PR_NODES_COUNT>>2)) +
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_FIXED_NODES_COUNT>>2));
-	dev->config_devices = devm_kzalloc(&pdev->dev,
-		dev->number_of_config_devices * sizeof(struct dyplo_config_dev),
+	dev->config_devices = devm_kcalloc(&pdev->dev,
+		dev->number_of_config_devices, sizeof(struct dyplo_config_dev),
 		GFP_KERNEL);
 	if (!dev->config_devices) {
 		dev_err(&pdev->dev, "No memory for %d cfg devices\n", dev->number_of_config_devices);

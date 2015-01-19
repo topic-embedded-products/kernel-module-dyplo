@@ -125,11 +125,9 @@ static unsigned int dyplo_get_config_index(const struct dyplo_config_dev *cfg_de
 	return (((char*)cfg_dev->base - (char*)cfg_dev->parent->base) / DYPLO_CONFIG_SIZE) - 1;
 }
 
-static bool dyplo_is_cpu_node(const struct dyplo_config_dev *cfg_dev)
+static u32 dyplo_cfg_get_id(const struct dyplo_config_dev *cfg_dev)
 {
-	u32 device_id = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_ID>>2));
-	return
-		(device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) == DYPLO_REG_ID_PRODUCT_TOPIC_CPU;
+	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_ID>>2));
 }
 static int dyplo_number_of_input_queues(const struct dyplo_config_dev *cfg_dev)
 {
@@ -1229,8 +1227,8 @@ static struct file_operations dyplo_fifo_write_fops =
 };
 
 
-/* Interrupt service routine for one node */
-static irqreturn_t dyplo_fifo_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
+/* Interrupt service routine for CPU fifo node, version 1 */
+static irqreturn_t dyplo_fifo_isr_v1(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
 {
 	int index;
 	u32 write_status_reg = ioread32_quick(
@@ -1266,6 +1264,42 @@ static irqreturn_t dyplo_fifo_isr(struct dyplo_dev *dev, struct dyplo_config_dev
 	return IRQ_HANDLED;
 }
 
+/* Interrupt service routine for CPU fifo node, version 2 */
+static irqreturn_t dyplo_fifo_isr_v2(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
+{
+	int index;
+	u32 status_reg = ioread32_quick(
+		cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_MASK>>2));
+	u16 read_status_reg;
+	u16 write_status_reg;
+
+	/* Allow IRQ sharing */
+	if (!status_reg)
+		return IRQ_NONE;
+
+	/* Acknowledge interrupt to hardware */
+	iowrite32_quick(status_reg,
+			cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_CLR>>2));
+	pr_debug("%s(status=0x%x)\n", __func__, status_reg);
+	/* Trigger the associated wait queues, "read" queues first. These
+	 * are in the upper 16 bits of the interrupt status word */
+	read_status_reg = status_reg >> 16;
+	for (index = 0; (read_status_reg != 0) && (index < dev->number_of_fifo_read_devices); ++index)
+	{
+		if (read_status_reg & 1)
+			wake_up_interruptible(&dev->fifo_devices[dev->number_of_fifo_write_devices + index].fifo_wait_queue);
+		read_status_reg >>= 1;
+	}
+	write_status_reg = status_reg & 0xFFFF;
+	for (index = 0; (write_status_reg != 0) && (index < dev->number_of_fifo_write_devices); ++index)
+	{
+		if (write_status_reg & 1)
+			wake_up_interruptible(&dev->fifo_devices[index].fifo_wait_queue);
+		write_status_reg >>= 1;
+	}
+	return IRQ_HANDLED;
+}
+
 static irqreturn_t dyplo_isr(int irq, void *dev_id)
 {
 	struct dyplo_dev *dev = (struct dyplo_dev*)dev_id;
@@ -1287,7 +1321,9 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	return result;
 }
 
-static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_dev *cfg_dev)
+static int create_sub_devices_cpu_fifo(
+	struct platform_device *pdev, struct dyplo_config_dev *cfg_dev,
+	u32 sub_device_id)
 {
 	int retval;
 	struct dyplo_dev *dev = cfg_dev->parent;
@@ -1297,9 +1333,12 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 	int number_of_read_fifos;
 	int i;
 	struct device *device;
-
-	if (! dyplo_is_cpu_node(cfg_dev))
-		return 0;
+	
+	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) > 0x0200) {
+		dev_err(&pdev->dev, "Unsupported CPU FIFO node revision: %#x\n",
+			sub_device_id);
+		return -EINVAL;
+	}
 
 	if (dev->number_of_fifo_read_devices || dev->number_of_fifo_write_devices) {
 		dev_err(&pdev->dev, "Fifos already registered\n");
@@ -1378,7 +1417,10 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		++fifo_index;
 	}
 
-	cfg_dev->isr = dyplo_fifo_isr;
+	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) >= 0x0200)
+		cfg_dev->isr = dyplo_fifo_isr_v2;
+	else
+		cfg_dev->isr = dyplo_fifo_isr_v1;
 
 	return 0;
 
@@ -1394,6 +1436,18 @@ error_register_chrdev_region:
 	dev->number_of_fifo_write_devices = 0;
 	dev->number_of_fifo_read_devices = 0;
 	return retval;
+}
+
+static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_dev *cfg_dev)
+{
+	u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
+
+	switch (sub_device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) {
+		case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
+			return create_sub_devices_cpu_fifo(pdev, cfg_dev, sub_device_id);
+		default:
+			return 0; /* No subdevice needed */
+	}
 }
 
 static int dyplo_proc_show(struct seq_file *m, void *offset)
@@ -1473,7 +1527,7 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 				ctl_index,
 				(cfg_dev->open_mode & FMODE_READ) ? 'r' : '-',
 				(cfg_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
-				ioread32_quick(ctl_base + (DYPLO_REG_ID>>2)),
+				dyplo_cfg_get_id(cfg_dev),
 				number_of_fifos_in, number_of_fifos_out);
 		for (queue_index = 0; queue_index < number_of_fifos_out; ++queue_index)
 		{
@@ -1546,7 +1600,7 @@ static int dyplo_probe(struct platform_device *pdev)
 		return -ENOENT;
 	}
 
-	control_id = *(dev->base + (DYPLO_REG_ID>>2));
+	control_id = ioread32_quick(dev->base + (DYPLO_REG_ID>>2));
 	if ((control_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) !=
 			DYPLO_REG_ID_PRODUCT_TOPIC_CONTROL)
 	{

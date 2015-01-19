@@ -23,8 +23,10 @@
  * MA 02110-1301 USA or see <http://www.gnu.org/licenses/>.
  *
  * You can contact Topic by electronic mail via info@topic.nl or via
- * paper mail at the following address: Postbus 440, 5680 AK Best, The Netherlands.
+ * paper mail at the following address:
+ * Postbus 440, 5680 AK Best, The Netherlands.
  */
+
 /* Memory range for a processing block is 64k */
 #define DYPLO_CONFIG_SIZE	(64*1024)
 /* Each FIFO occupies 256 words address range */
@@ -35,6 +37,8 @@
 
 #define DYPLO_REG_ID_MASK_VENDOR	0xFF000000
 #define DYPLO_REG_ID_MASK_PRODUCT	0x00FF0000
+#define DYPLO_REG_ID_MASK_REVISION	0x0000FF00
+#define DYPLO_REG_ID_MASK_VERSION	0x000000FF
 #define DYPLO_REG_ID_MASK_VENDOR_PRODUCT	(DYPLO_REG_ID_MASK_VENDOR|DYPLO_REG_ID_MASK_PRODUCT)
 
 #define DYPLO_REG_ID_VENDOR_TOPIC	0x01000000
@@ -67,6 +71,13 @@
 #define DYPLO_REG_CPU_COUNTER_BASE	(0x60+DYPLO_NODE_REG_SIZE)
 
 /* Specific layout of the CPU/PL communication node */
+
+/* Layout of V2 interrupt status registers */
+#define DYPLO_REG_FIFO_IRQ_MASK	0x20
+#define DYPLO_REG_FIFO_IRQ_STATUS	0x24
+#define DYPLO_REG_FIFO_IRQ_SET	0x28
+#define DYPLO_REG_FIFO_IRQ_CLR	0x2C
+/* Layout of V1 interrupt status registers  */
 #define DYPLO_REG_FIFO_WRITE_IRQ_MASK	0x20
 #define DYPLO_REG_FIFO_WRITE_IRQ_STATUS	0x24
 #define DYPLO_REG_FIFO_WRITE_IRQ_SET	0x28
@@ -76,11 +87,11 @@
 #define DYPLO_REG_FIFO_READ_IRQ_SET	0x38
 #define DYPLO_REG_FIFO_READ_IRQ_CLR	0x3C
 
+/* Queue information */
 #define DYPLO_REG_CPU_FIFO_WRITE_COUNT	0x44
 #define DYPLO_REG_CPU_FIFO_READ_COUNT	0x48
 #define DYPLO_REG_CPU_FIFO_WRITE_DEPTH	0x4C
 #define DYPLO_REG_CPU_FIFO_READ_DEPTH	0x50
-
 /* Read level threshold */
 #define DYPLO_REG_FIFO_READ_THD_BASE	0x100
 /* Actual fill level */
@@ -108,9 +119,7 @@
 #define DYPLO_FIFO_WRITE_SIZE	255
 #define DYPLO_FIFO_READ_SIZE	255
 
-/* Hack: Write with burst doesn't work, limit to <32 bytes per call */
 #define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	DYPLO_FIFO_MEMORY_SIZE
-/* Reading does not suffer from this problem it appears */
 #define DYPLO_FIFO_READ_MAX_BURST_SIZE DYPLO_FIFO_MEMORY_SIZE
 
 /* ioctl values for dyploctl device, set and get routing tables */

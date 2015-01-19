@@ -44,6 +44,8 @@
 #define DYPLO_REG_ID_VENDOR_TOPIC	0x01000000
 #define DYPLO_REG_ID_PRODUCT_TOPIC_CONTROL	(DYPLO_REG_ID_VENDOR_TOPIC | 0x00010000)
 #define DYPLO_REG_ID_PRODUCT_TOPIC_CPU	(DYPLO_REG_ID_VENDOR_TOPIC | 0x00020000)
+#define DYPLO_REG_ID_PRODUCT_TOPIC_DMA	(DYPLO_REG_ID_VENDOR_TOPIC | 0x00060000)
+/* #define DYPLO_REG_ID_PRODUCT_TOPIC_DMA	(DYPLO_REG_ID_VENDOR_TOPIC | 0x00030000) * Testing */
 
 #define DYPLO_REG_BACKPLANE_ENABLE_STATUS	0x10
 #define DYPLO_REG_BACKPLANE_ENABLE_SET	0x14
@@ -122,6 +124,26 @@
 #define DYPLO_FIFO_WRITE_MAX_BURST_SIZE	DYPLO_FIFO_MEMORY_SIZE
 #define DYPLO_FIFO_READ_MAX_BURST_SIZE DYPLO_FIFO_MEMORY_SIZE
 
+/* DMA controller address space */
+#define DYPLO_DMA_TOLOGIC_CONTROL	0x60
+#define DYPLO_DMA_TOLOGIC_STATUS	0x64
+#define DYPLO_DMA_TOLOGIC_STARTADDR	0x70
+#define DYPLO_DMA_TOLOGIC_USERBITS	0x74
+/* Writing BYTESIZE starts the transfer */
+#define DYPLO_DMA_TOLOGIC_BYTESIZE	0x78
+/* Reading RESULT_ADDR removes the result from the queue */
+#define DYPLO_DMA_TOLOGIC_RESULT_ADDR	0x80
+
+#define DYPLO_DMA_FROMLOGIC_CONTROL	0x90
+#define DYPLO_DMA_FROMLOGIC_STATUS	0x94
+#define DYPLO_DMA_FROMLOGIC_STARTADDR	0xA0
+/* Writing BYTESIZE starts the transfer */
+#define DYPLO_DMA_FROMLOGIC_BYTESIZE	0xA8
+#define DYPLO_DMA_FROMLOGIC_RESULT_ADDR	0xB0
+#define DYPLO_DMA_FROMLOGIC_RESULT_USERBITS	0xB4
+/* Reading RESULT_BYTESIZE removes the result from the queue */
+#define DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE	0xB8
+
 /* ioctl values for dyploctl device, set and get routing tables */
 struct dyplo_route_item_t {
 	unsigned char dstFifo; /* LSB */
@@ -141,6 +163,9 @@ struct dyplo_route_t  {
 #define DYPLO_IOC_ROUTE_GET	0x02
 #define DYPLO_IOC_ROUTE_TELL	0x03
 #define DYPLO_IOC_ROUTE_DELETE	0x04
+#define DYPLO_IOC_ROUTE_TELL_TO_LOGIC	0x05
+#define DYPLO_IOC_ROUTE_TELL_FROM_LOGIC	0x06
+#define DYPLO_IOC_ROUTE_QUERY_ID	0x07
 
 #define DYPLO_IOC_BACKPLANE_STATUS	0x08
 #define DYPLO_IOC_BACKPLANE_DISABLE	0x09
@@ -168,6 +193,17 @@ struct dyplo_route_t  {
 #define DYPLO_IOCTROUTE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_TELL)
 /* Remove routes to a node. Argument is a integer node number. */
 #define DYPLO_IOCTROUTE_DELETE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_DELETE)
+
+/* Add a route from "this" dma or cpu node to another node. The argument
+ * is an integer of destination node | fifo << 8 */
+#define DYPLO_IOCTROUTE_TELL_TO_LOGIC	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_TELL_TO_LOGIC)
+/* Add a route from another node into "this" dma or cpu node. Argument
+ * is an integer of source node | fifo << 8 */
+#define DYPLO_IOCTROUTE_TELL_FROM_LOGIC	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_TELL_FROM_LOGIC)
+/* Get the node number and fifo (if applicable) for this cpu or dma
+ * node. Returns an integer of node | fifo << 8 */
+#define DYPLO_IOCQROUTE_QUERY_ID	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_QUERY_ID)
+
 /* Get backplane status. When called on control node, returns a bit mask where 0=CPU and
  * 1=first HDL node and so on. When called on config node, returns the status for only
  * that node, 0=disabled, non-zero is enabled */

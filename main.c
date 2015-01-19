@@ -70,10 +70,11 @@ struct dyplo_dev; /* forward */
 
 struct dyplo_config_dev
 {
-	struct dyplo_dev* parent;
+	struct dyplo_dev* parent; /* Owner of this struct */
 	u32 __iomem *base;
 	u32 __iomem *control_base;
 	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
+	irqreturn_t(*isr)(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev); /* IRQ handler, if any */
 };
 
 struct dyplo_fifo_dev
@@ -1276,9 +1277,11 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	pr_debug("%s(mask=0x%x)\n", __func__, mask);
 	while (mask) {
 		mask >>= 1; /* CPU node is '0', ctl doesn't need interrupt */
-		if (mask & 1)
-			if (dyplo_fifo_isr(dev, &dev->config_devices[index]) != IRQ_NONE)
+		if (mask & 1) {
+			struct dyplo_config_dev *cfg_dev = &dev->config_devices[index];
+			if (cfg_dev->isr && (cfg_dev->isr(dev, cfg_dev) != IRQ_NONE))
 				result = IRQ_HANDLED;
+		}
 		++index;
 	}
 	return result;
@@ -1374,6 +1377,8 @@ static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_
 		}
 		++fifo_index;
 	}
+
+	cfg_dev->isr = dyplo_fifo_isr;
 
 	return 0;
 

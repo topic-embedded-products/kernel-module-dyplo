@@ -56,6 +56,13 @@ MODULE_AUTHOR("Topic Embedded Products <www.topic.nl>");
  * bouncing via an intermediate kernel buffer. */
 /* #define ALLOW_DIRECT_USER_IOMEM_TRANSFERS */
 
+/* When defined, transfers end-of-file markers through Dyplo as
+ * user signals. This allows you to use something like
+ * cat inputfile > /dev/dyplow0 & ; cat /dev/dyplor0 > resultfile
+ * The extra transfers may confuse existing code, so don't define it
+ * yet. When defined, opening with O_APPEND disables it at runtime. */
+/* #define DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS */
+
 static const char DRIVER_CLASS_NAME[] = "dyplo";
 static const char DRIVER_CONTROL_NAME[] = "dyploctl";
 static const char DRIVER_CONFIG_NAME[] = "dyplocfg%d";
@@ -866,6 +873,7 @@ static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
+#ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
 	if (!fifo_dev->eof) {
 		/* We haven't seen any EOF sentinel yet, see if it's there and
 		 * consume it when present */
@@ -877,6 +885,7 @@ static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 			pr_debug("%s consume extra EOF sentinel\n", __func__);
 		}
 	}
+#endif
 	fifo_dev->is_open = false;
 	return 0;
 }
@@ -893,8 +902,10 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 #endif
 	pr_debug("%s(%d)\n", __func__, count);
 
+#ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
 	if (fifo_dev->eof)
 		return 0; /* Indicate end of file once sentinel received */
+#endif
 
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
@@ -924,12 +935,14 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 			/* user_signal is valid because words_available is non-nul */
 			if (user_signal != fifo_dev->user_signal) {
 				fifo_dev->user_signal = user_signal;
+#ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
 				if (user_signal == DYPLO_USERSIGNAL_EOF) {
 					pr_debug("%s: Got EOF\n", __func__);
 					fifo_dev->eof = true;
 					ioread32_quick(mapped_memory); /* Fetch sentinel */
 					break;
 				}
+#endif
 				goto exit_ok;
 			}
 		}
@@ -944,11 +957,13 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 					/* usersignal is only valid when there is data */
 					if (user_signal != fifo_dev->user_signal) {
 						fifo_dev->user_signal = user_signal;
+#ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
 						if (user_signal == DYPLO_USERSIGNAL_EOF) {
 							pr_debug("%s: Got EOF\n", __func__);
 							fifo_dev->eof = true;
 							ioread32_quick(mapped_memory); /* Fetch sentinel */
 						}
+#endif
 						finish_wait(&fifo_dev->fifo_wait_queue, &wait);
 						goto exit_ok;
 					}
@@ -1179,6 +1194,7 @@ static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 	int status = 0;
 
 	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
+#ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
 	/* Setting O_APPEND mode prevents sending a EOF on close, which
 	 * is not quite intuitive but convenient. */
 	if (!fifo_dev->eof &&
@@ -1211,6 +1227,7 @@ static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 	} else
 		pr_debug("%s: EOF sentinel not sent\n", __func__);
 error:
+#endif
 	fifo_dev->is_open = false;
 	return status;
 }

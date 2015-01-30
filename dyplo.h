@@ -177,6 +177,8 @@ struct dyplo_route_t  {
 #define DYPLO_IOC_TRESHOLD_QUERY	0x10
 #define DYPLO_IOC_TRESHOLD_TELL	0x11
 
+#define DYPLO_IOC_USERSIGNAL_QUERY	0x12
+#define DYPLO_IOC_USERSIGNAL_TELL	0x13
 
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
@@ -221,3 +223,7 @@ struct dyplo_route_t  {
  * reset), or to a CPU read/write fifo (argument ignored). */
 #define DYPLO_IOCRESET_FIFO_WRITE	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_RESET_FIFO_WRITE)
 #define DYPLO_IOCRESET_FIFO_READ	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_RESET_FIFO_READ)
+/* Set or get user signal bits. These are the upper 4 bits of Dyplo data
+ * that aren't part of the actual data, but control the flow. */
+#define DYPLO_IOCQUSERSIGNAL   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_USERSIGNAL_QUERY)
+#define DYPLO_IOCTUSERSIGNAL   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_USERSIGNAL_TELL)

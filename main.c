@@ -804,6 +804,17 @@ static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
 		cfg_dev->base + (fifo_dev->index * (DYPLO_FIFO_MEMORY_SIZE>>2));
 }
 
+static bool dyplo_fifo_write_usersignal(struct dyplo_fifo_dev *fifo_dev, u16 user_signal)
+{
+	__iomem int *control_base_us =
+		fifo_dev->config_parent->control_base +
+		(DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) +
+		fifo_dev->index;
+	iowrite32((u32)user_signal, control_base_us);
+	/* Test if user signals are supported by reading back the value */
+	return (u16)ioread32_quick(control_base_us) == user_signal;
+}
+
 static u32 dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 {
 	int index = fifo_dev->index;
@@ -1096,6 +1107,19 @@ static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 			else
 				iowrite32_quick(1 << fifo_dev->index, (fifo_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
 			return 0;
+		case DYPLO_IOC_USERSIGNAL_QUERY:
+			/* TODO: Return LAST usersignal, not next */
+			return fifo_dev->user_signal;
+		case DYPLO_IOC_USERSIGNAL_TELL:
+			if (!(filp->f_mode & FMODE_WRITE))
+				return -EINVAL;
+			arg &= 0xFFFF; /* Only lower bits */
+			if (!dyplo_fifo_write_usersignal(fifo_dev, arg)) {
+				printk(KERN_ERR "%s: Failed to set usersignal\n", __func__);
+				return -EIO;
+			}
+			fifo_dev->user_signal = arg;
+			return 0;
 		default:
 			return -ENOTTY;
 	}
@@ -1135,17 +1159,6 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 	pr_debug("%s index=%d thd=%d\n", __func__, index, thd);
 	iowrite32(thd, control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index);
 	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2));
-}
-
-static bool dyplo_fifo_write_usersignal(struct dyplo_fifo_dev *fifo_dev, u16 user_signal)
-{
-	__iomem int *control_base_us =
-		fifo_dev->config_parent->control_base +
-		(DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) +
-		fifo_dev->index;
-	iowrite32((u32)user_signal, control_base_us);
-	/* Test if user signals are supported by reading back the value */
-	return (u16)ioread32_quick(control_base_us) == user_signal;
 }
 
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
@@ -1453,6 +1466,9 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 	dma_dev->open_mode |= rw_mode; /* Set in-use bits */
 	filp->private_data = dma_dev; /* for other methods */
 	nonseekable_open(inode, filp);
+	if (rw_mode & FMODE_WRITE) /* Reset usersignal */
+		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
+			cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 exit_open:
 	up(&dev->fop_sem);
 	return status;
@@ -1598,7 +1614,6 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 			finish_wait(&dma_dev->wait_queue_to_logic, &wait);
 		pr_debug("%s sending addr=%#x size=%u\n", __func__, dma_op.addr, dma_op.size);
 		iowrite32_quick(dma_op.addr, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR>>2));
-		iowrite32_quick(0, control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 		iowrite32(dma_op.size, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
 		kfifo_put(&dma_dev->dma_to_logic_wip, dma_op);
 		
@@ -1843,6 +1858,17 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			return 0;
 		case DYPLO_IOC_RESET_FIFO_READ:
 			iowrite32_quick(1, (dma_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
+			return 0;
+		case DYPLO_IOC_USERSIGNAL_QUERY:
+			if ((filp->f_mode & FMODE_WRITE)) {
+				return ioread32_quick(dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
+			} else {
+				return dma_dev->dma_from_logic_current_op.user_signal;
+			}
+		case DYPLO_IOC_USERSIGNAL_TELL:
+			if (!(filp->f_mode & FMODE_WRITE))
+				return -EINVAL;
+			iowrite32_quick(arg, dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 			return 0;
 		default:
 			return -ENOTTY;

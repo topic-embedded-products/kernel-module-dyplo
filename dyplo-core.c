@@ -1860,11 +1860,10 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			iowrite32_quick(1, (dma_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
 			return 0;
 		case DYPLO_IOC_USERSIGNAL_QUERY:
-			if ((filp->f_mode & FMODE_WRITE)) {
+			if (filp->f_mode & FMODE_WRITE)
 				return ioread32_quick(dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
-			} else {
+			else
 				return dma_dev->dma_from_logic_current_op.user_signal;
-			}
 		case DYPLO_IOC_USERSIGNAL_TELL:
 			if (!(filp->f_mode & FMODE_WRITE))
 				return -EINVAL;
@@ -1930,7 +1929,7 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 }
 
 static int create_sub_devices_cpu_fifo(
-	struct platform_device *pdev, struct dyplo_config_dev *cfg_dev,
+	struct device *device, struct dyplo_config_dev *cfg_dev,
 	u32 sub_device_id)
 {
 	int retval;
@@ -1941,20 +1940,20 @@ static int create_sub_devices_cpu_fifo(
 	int number_of_write_fifos;
 	int number_of_read_fifos;
 	int i;
-	struct device *device;
+	struct device *char_device;
 	
 	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) > 0x0200) {
-		dev_err(&pdev->dev, "Unsupported CPU FIFO node revision: %#x\n",
+		dev_err(device, "Unsupported CPU FIFO node revision: %#x\n",
 			sub_device_id);
 		return -EINVAL;
 	}
 
 	if (dev->count_fifo_write_devices || dev->count_fifo_write_devices) {
-		dev_err(&pdev->dev, "Multiple CPU nodes not supported yet\n");
+		dev_err(device, "Multiple CPU nodes not supported yet\n");
 		return -EBUSY;
 	}
 
-	fifo_ctl_dev = devm_kzalloc(&pdev->dev,
+	fifo_ctl_dev = devm_kzalloc(device,
 		sizeof(struct dyplo_fifo_control_dev), GFP_KERNEL);
 	if (!fifo_ctl_dev)
 		return -ENOMEM;
@@ -1963,11 +1962,11 @@ static int create_sub_devices_cpu_fifo(
 
 	number_of_write_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_WRITE_COUNT>>2));
 	number_of_read_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_READ_COUNT>>2));
-	fifo_ctl_dev->fifo_devices = devm_kcalloc(&pdev->dev,
+	fifo_ctl_dev->fifo_devices = devm_kcalloc(device,
 		number_of_write_fifos + number_of_read_fifos, sizeof(struct dyplo_fifo_dev),
 		GFP_KERNEL);
 	if (!fifo_ctl_dev->fifo_devices) {
-		dev_err(&pdev->dev, "No memory for %d fifo devices\n",
+		dev_err(device, "No memory for %d fifo devices\n",
 			number_of_write_fifos + number_of_read_fifos);
 		return -ENOMEM;
 	}
@@ -1988,7 +1987,7 @@ static int create_sub_devices_cpu_fifo(
 	retval = cdev_add(&fifo_ctl_dev->cdev_fifo_write,
 		first_fifo_devt, number_of_write_fifos);
 	if (retval) {
-		dev_err(&pdev->dev, "cdev_add(cdev_fifo_write) failed\n");
+		dev_err(device, "cdev_add(cdev_fifo_write) failed\n");
 		goto error_cdev_w;
 	}
 	cdev_init(&fifo_ctl_dev->cdev_fifo_read, &dyplo_fifo_read_fops);
@@ -1996,7 +1995,7 @@ static int create_sub_devices_cpu_fifo(
 	retval = cdev_add(&fifo_ctl_dev->cdev_fifo_read,
 		first_fifo_devt+number_of_write_fifos, number_of_read_fifos);
 	if (retval) {
-		dev_err(&pdev->dev, "cdev_add(cdev_fifo_read) failed\n");
+		dev_err(device, "cdev_add(cdev_fifo_read) failed\n");
 		goto error_cdev_r;
 	}
 
@@ -2006,13 +2005,13 @@ static int create_sub_devices_cpu_fifo(
 		fifo_dev->config_parent = cfg_dev;
 		fifo_dev->index = i;
 		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
-		device = device_create(dev->class, &pdev->dev,
+		char_device = device_create(dev->class, device,
 			first_fifo_devt + fifo_index,
 			fifo_dev, DRIVER_FIFO_WRITE_NAME, dev->count_fifo_write_devices + i);
-		if (IS_ERR(device)) {
-			dev_err(&pdev->dev, "unable to create fifo write device %d\n",
+		if (IS_ERR(char_device)) {
+			dev_err(device, "unable to create fifo write device %d\n",
 				i);
-			retval = PTR_ERR(device);
+			retval = PTR_ERR(char_device);
 			goto failed_device_create;
 		}
 		++fifo_index;
@@ -2023,13 +2022,13 @@ static int create_sub_devices_cpu_fifo(
 		fifo_dev->config_parent = cfg_dev;
 		fifo_dev->index = i;
 		init_waitqueue_head(&fifo_dev->fifo_wait_queue);
-		device = device_create(dev->class, &pdev->dev,
+		char_device = device_create(dev->class, device,
 			first_fifo_devt + fifo_index,
 			fifo_dev, DRIVER_FIFO_READ_NAME, dev->count_fifo_read_devices + i);
-		if (IS_ERR(device)) {
-			dev_err(&pdev->dev, "unable to create fifo read device %d\n",
+		if (IS_ERR(char_device)) {
+			dev_err(char_device, "unable to create fifo read device %d\n",
 				i);
-			retval = PTR_ERR(device);
+			retval = PTR_ERR(char_device);
 			goto failed_device_create;
 		}
 		++fifo_index;
@@ -2059,24 +2058,24 @@ error_register_chrdev_region:
 }
 
 static int create_sub_devices_dma_fifo(
-	struct platform_device *pdev, struct dyplo_config_dev *cfg_dev,
+	struct device *device, struct dyplo_config_dev *cfg_dev,
 	u32 sub_device_id)
 {
 	struct dyplo_dev *dev = cfg_dev->parent;
 	int retval;
 	dev_t first_fifo_devt;
 	struct dyplo_dma_dev* dma_dev;
-	struct device *device;
+	struct device *char_device;
 
 	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) > 0x0100) {
-		dev_err(&pdev->dev, "Unsupported DMA FIFO node revision: %#x\n",
+		dev_err(device, "Unsupported DMA FIFO node revision: %#x\n",
 			sub_device_id);
 		return -EINVAL;
 	}
 
-	dma_dev = devm_kzalloc(&pdev->dev, sizeof(struct dyplo_dma_dev), GFP_KERNEL);
+	dma_dev = devm_kzalloc(device, sizeof(struct dyplo_dma_dev), GFP_KERNEL);
 	if (!dma_dev) {
-		dev_err(&pdev->dev, "No memory for DMA device\n");
+		dev_err(device, "No memory for DMA device\n");
 		return -ENOMEM;
 	}
 	cfg_dev->private_data = dma_dev;
@@ -2091,19 +2090,19 @@ static int create_sub_devices_dma_fifo(
 		goto error_register_chrdev_region;
 	dev->devt_last += 1;
 
-	dma_dev->dma_to_logic_memory = dma_alloc_coherent(&pdev->dev,
+	dma_dev->dma_to_logic_memory = dma_alloc_coherent(device,
 		dyplo_dma_memory_size, &dma_dev->dma_to_logic_handle, GFP_DMA | GFP_KERNEL);
 	if (!dma_dev->dma_to_logic_memory) {
-		dev_err(&pdev->dev, "Failed dma_alloc_coherent for DMA device\n");
+		dev_err(device, "Failed dma_alloc_coherent for DMA device\n");
 		retval = -ENOMEM;
 		goto error_dma_to_logic_alloc;
 	}
 	dma_dev->dma_to_logic_memory_size = dyplo_dma_memory_size;
 
-	dma_dev->dma_from_logic_memory = dma_alloc_coherent(&pdev->dev,
+	dma_dev->dma_from_logic_memory = dma_alloc_coherent(device,
 		dyplo_dma_memory_size, &dma_dev->dma_from_logic_handle, GFP_DMA | GFP_KERNEL);
 	if (!dma_dev->dma_from_logic_memory) {
-		dev_err(&pdev->dev, "Failed dma_alloc_coherent for DMA device\n");
+		dev_err(device, "Failed dma_alloc_coherent for DMA device\n");
 		retval = -ENOMEM;
 		goto error_dma_from_logic_alloc;
 	}
@@ -2113,14 +2112,14 @@ static int create_sub_devices_dma_fifo(
 	dma_dev->cdev_dma.owner = THIS_MODULE;
 	retval = cdev_add(&dma_dev->cdev_dma, first_fifo_devt, 1);
 	if (retval) {
-		dev_err(&pdev->dev, "cdev_add(dma_dev) failed\n");
+		dev_err(device, "cdev_add(dma_dev) failed\n");
 		goto error_cdev_add;
 	}
-	device = device_create(dev->class, &pdev->dev,
+	char_device = device_create(dev->class, device,
 		first_fifo_devt, dma_dev, DRIVER_DMA_DEVICE_NAME, dev->number_of_dma_devices);
-	if (IS_ERR(device)) {
-		dev_err(&pdev->dev, "unable to create DMA device %d\n", dev->number_of_dma_devices);
-		retval = PTR_ERR(device);
+	if (IS_ERR(char_device)) {
+		dev_err(device, "unable to create DMA device %d\n", dev->number_of_dma_devices);
+		retval = PTR_ERR(char_device);
 		goto failed_device_create;
 	}
 	
@@ -2134,48 +2133,48 @@ static int create_sub_devices_dma_fifo(
 
 failed_device_create:
 error_cdev_add:
-	dma_free_coherent(&pdev->dev, dma_dev->dma_from_logic_memory_size,
+	dma_free_coherent(device, dma_dev->dma_from_logic_memory_size,
 		dma_dev->dma_from_logic_memory, dma_dev->dma_from_logic_handle);
 error_dma_from_logic_alloc:
-	dma_free_coherent(&pdev->dev, dma_dev->dma_to_logic_memory_size,
+	dma_free_coherent(device, dma_dev->dma_to_logic_memory_size,
 		dma_dev->dma_to_logic_memory, dma_dev->dma_to_logic_handle);
 error_dma_to_logic_alloc:
 	unregister_chrdev_region(first_fifo_devt, dev->devt_last);
 	dev->devt_last = first_fifo_devt;
 error_register_chrdev_region:
-	devm_kfree(&pdev->dev, dma_dev);
+	devm_kfree(device, dma_dev);
 	return retval;
 }
 
 static void destroy_sub_devices_dma_fifo(
-	struct platform_device *pdev, struct dyplo_config_dev *cfg_dev,
+	struct device *device, struct dyplo_config_dev *cfg_dev,
 	u32 sub_device_id)
 {
 	struct dyplo_dma_dev* dma_dev = cfg_dev->private_data;
 	/* Stop the DMA cores to make sure the memory is no longer being used */
 	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
 	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
-	dma_free_coherent(&pdev->dev, dma_dev->dma_from_logic_memory_size,
+	dma_free_coherent(device, dma_dev->dma_from_logic_memory_size,
 		dma_dev->dma_from_logic_memory, dma_dev->dma_from_logic_handle);
-	dma_free_coherent(&pdev->dev, dma_dev->dma_to_logic_memory_size,
+	dma_free_coherent(device, dma_dev->dma_to_logic_memory_size,
 		dma_dev->dma_to_logic_memory, dma_dev->dma_to_logic_handle);
 }
 
-static int create_sub_devices(struct platform_device *pdev, struct dyplo_config_dev *cfg_dev)
+static int create_sub_devices(struct device *device, struct dyplo_config_dev *cfg_dev)
 {
 	u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
 
 	switch (sub_device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) {
 		case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
-			return create_sub_devices_cpu_fifo(pdev, cfg_dev, sub_device_id);
+			return create_sub_devices_cpu_fifo(device, cfg_dev, sub_device_id);
 		case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
-			return create_sub_devices_dma_fifo(pdev, cfg_dev, sub_device_id);
+			return create_sub_devices_dma_fifo(device, cfg_dev, sub_device_id);
 		default:
 			return 0; /* No subdevice needed */
 	}
 }
 
-static void destroy_sub_devices(struct platform_device *pdev, struct dyplo_config_dev *cfg_dev)
+static void destroy_sub_devices(struct device *device, struct dyplo_config_dev *cfg_dev)
 {
 	u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
 
@@ -2183,7 +2182,7 @@ static void destroy_sub_devices(struct platform_device *pdev, struct dyplo_confi
 		case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
 			break; /* No particular destroy yet */
 		case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
-			return destroy_sub_devices_dma_fifo(pdev, cfg_dev, sub_device_id);
+			return destroy_sub_devices_dma_fifo(device, cfg_dev, sub_device_id);
 		default:
 			break;
 	}
@@ -2370,30 +2369,31 @@ static const struct file_operations dyplo_proc_fops = {
 static int dyplo_probe(struct platform_device *pdev)
 {
 	struct dyplo_dev *dev;
-	struct device *device;
+	struct device *device = &pdev->dev;
 	dev_t devt;
 	int retval;
 	int device_index;
 	u32 control_id;
 	u32 dyplo_version;
 	struct proc_dir_entry *proc_file_entry;
+	struct device *char_device;
 
-	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
+	dev = devm_kzalloc(device, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
-	dev_set_drvdata(&pdev->dev, dev);
+	dev_set_drvdata(device, dev);
 	sema_init(&dev->fop_sem, 1);
 
 	/* resource configuration */
 	dev->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dev->base = devm_ioremap_resource(&pdev->dev, dev->mem);
+	dev->base = devm_ioremap_resource(device, dev->mem);
 	if (IS_ERR(dev->base)) {
-		dev_err(&pdev->dev, "Failed to map device memory\n");
+		dev_err(device, "Failed to map device memory\n");
 		return PTR_ERR(dev->base);
 	}
 	dev->irq = platform_get_irq(pdev, 0);
 	if (dev->irq < 0) {
-		dev_err(&pdev->dev, "IRQ resource missing\n");
+		dev_err(device, "IRQ resource missing\n");
 		return -ENOENT;
 	}
 
@@ -2401,12 +2401,12 @@ static int dyplo_probe(struct platform_device *pdev)
 	if ((control_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) !=
 			DYPLO_REG_ID_PRODUCT_TOPIC_CONTROL)
 	{
-		dev_err(&pdev->dev, "Bad device ID: 0x%x\n", control_id);
+		dev_err(device, "Bad device ID: 0x%x\n", control_id);
 		return -EINVAL;
 	}
 
 	dyplo_version = ioread32_quick(dev->base + (DYPLO_REG_CONTROL_DYPLO_VERSION>>2));
-	dev_info(&pdev->dev, "Dyplo version %d.%d.%d\n",
+	dev_info(device, "Dyplo version %d.%d.%d\n",
 		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF, dyplo_version & 0xFF);
 	if (dyplo_version > 0x7DE0101)
 		dev->stream_id_width = 3;
@@ -2420,14 +2420,14 @@ static int dyplo_probe(struct platform_device *pdev)
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_FIXED_NODES_COUNT>>2));
 
 	/* HACK for DMA node */
-	if (dyplo_version == 0x7DE0401)
+	if (dyplo_version >= 0x7DE0401)
 		++dev->number_of_config_devices;
 
-	dev->config_devices = devm_kcalloc(&pdev->dev,
+	dev->config_devices = devm_kcalloc(device,
 		dev->number_of_config_devices, sizeof(struct dyplo_config_dev),
 		GFP_KERNEL);
 	if (!dev->config_devices) {
-		dev_err(&pdev->dev, "No memory for %d cfg devices\n", dev->number_of_config_devices);
+		dev_err(device, "No memory for %d cfg devices\n", dev->number_of_config_devices);
 		return -ENOMEM;
 	}
 
@@ -2442,7 +2442,7 @@ static int dyplo_probe(struct platform_device *pdev)
 	dev->cdev_control.owner = THIS_MODULE;
 	retval = cdev_add(&dev->cdev_control, devt, 1);
 	if (retval) {
-		dev_err(&pdev->dev, "cdev_add(ctl) failed\n");
+		dev_err(device, "cdev_add(ctl) failed\n");
 		goto failed_cdev;
 	}
 
@@ -2450,30 +2450,30 @@ static int dyplo_probe(struct platform_device *pdev)
 	dev->cdev_config.owner = THIS_MODULE;
 	retval = cdev_add(&dev->cdev_config, devt + 1, dev->number_of_config_devices);
 	if (retval) {
-		dev_err(&pdev->dev, "cdev_add(cfg) failed\n");
+		dev_err(device, "cdev_add(cfg) failed\n");
 		goto failed_cdev;
 	}
 
 	dev->class = class_create(THIS_MODULE, DRIVER_CLASS_NAME);
 	if (IS_ERR(dev->class)) {
-		dev_err(&pdev->dev, "failed to create class\n");
+		dev_err(device, "failed to create class\n");
 		retval = PTR_ERR(dev->class);
 		goto failed_class;
 	}
 
 	device_index = 0;
 
-	device = device_create(dev->class, &pdev->dev, devt, dev,
+	char_device = device_create(dev->class, device, devt, dev,
 				DRIVER_CONTROL_NAME);
-	if (IS_ERR(device)) {
-		dev_err(&pdev->dev, "unable to create device\n");
-		retval = PTR_ERR(device);
+	if (IS_ERR(char_device)) {
+		dev_err(device, "unable to create device\n");
+		retval = PTR_ERR(char_device);
 		goto failed_device_create;
 	}
 
 	retval = request_irq(dev->irq, dyplo_isr, 0, pdev->name, dev);
 	if (retval) {
-		dev_err(&pdev->dev, "Cannot claim IRQ\n");
+		dev_err(device, "Cannot claim IRQ\n");
 		goto failed_request_irq;
 	}
 
@@ -2487,18 +2487,18 @@ static int dyplo_probe(struct platform_device *pdev)
 		cfg_dev->control_base =
 			(dev->base + ((DYPLO_NODE_REG_SIZE>>2) * (device_index + 1)));
 
-		device = device_create(dev->class, &pdev->dev,
+		char_device = device_create(dev->class, device,
 			devt + 1 + device_index,
 			cfg_dev, DRIVER_CONFIG_NAME, device_index);
-		if (IS_ERR(device)) {
-			dev_err(&pdev->dev, "unable to create config device %d\n",
+		if (IS_ERR(char_device)) {
+			dev_err(device, "unable to create config device %d\n",
 				device_index);
 			retval = PTR_ERR(device);
 			goto failed_device_create_cfg;
 		}
-		retval = create_sub_devices(pdev, cfg_dev);
+		retval = create_sub_devices(device, cfg_dev);
 		if (retval) {
-			dev_err(&pdev->dev, "unable to create sub-device %d: %d\n",
+			dev_err(device, "unable to create sub-device %d: %d\n",
 				device_index, retval);
 			/* Should we abort? */
 		}
@@ -2507,7 +2507,7 @@ static int dyplo_probe(struct platform_device *pdev)
 
 	proc_file_entry = proc_create_data(DRIVER_CLASS_NAME, 0444, NULL, &dyplo_proc_fops, dev);
 	if (proc_file_entry == NULL)
-		dev_err(&pdev->dev, "unable to create proc entry\n");
+		dev_err(device, "unable to create proc entry\n");
 
 	/* And finally, enable the backplane */
 	*(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_SET>>2)) =
@@ -2532,17 +2532,18 @@ failed_cdev:
 
 static int dyplo_remove(struct platform_device *pdev)
 {
+	struct device *device = &pdev->dev;
 	struct dyplo_dev *dev;
 	int i;
 
-	dev = dev_get_drvdata(&pdev->dev);
+	dev = dev_get_drvdata(device);
 	if (!dev)
 		return -ENODEV;
 
 	remove_proc_entry(DRIVER_CLASS_NAME, NULL);
 
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		destroy_sub_devices(pdev, &dev->config_devices[i]);
+		destroy_sub_devices(device, &dev->config_devices[i]);
 
 	for (i = dev->number_of_config_devices +
 		dev->count_fifo_write_devices + dev->count_fifo_read_devices;
@@ -2551,8 +2552,6 @@ static int dyplo_remove(struct platform_device *pdev)
 	class_destroy(dev->class);
 	unregister_chrdev_region(dev->devt, dev->devt_last);
 	free_irq(dev->irq, dev);
-
-	/* TODO: More cleanup of individual nodes, like DMA */
 
 	return 0;
 }

@@ -2,7 +2,7 @@ KERNEL_SRC ?= "/lib/modules/$(shell uname -r)/build"
 
 obj-m += dyplo.o
 
-dyplo-objs := dyplo-core.o
+dyplo-objs := dyplo-core.o dyplo-of.o
 
 all:
 	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules

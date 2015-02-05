@@ -1,5 +1,5 @@
 /*
- * main.c
+ * dyplo-core.c
  *
  * Dyplo loadable kernel module.
  *
@@ -27,19 +27,12 @@
  */
 
 #include <linux/module.h>
-#include <linux/platform_device.h>
 #include <linux/init.h>
 #include <linux/device.h>
-#include <linux/semaphore.h>
-#include <linux/cdev.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
 #include <linux/moduleparam.h>
 #include <linux/slab.h>
-#include <linux/wait.h>
-#include <linux/sched.h>
-#include <linux/mm.h>
-#include <linux/interrupt.h>
 #include <linux/poll.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
@@ -47,6 +40,7 @@
 #include <linux/seq_file.h>
 #include <linux/dma-mapping.h>
 #include <linux/kfifo.h>
+#include "dyplo-core.h"
 #include "dyplo.h"
 
 MODULE_LICENSE("GPL");
@@ -84,18 +78,6 @@ static const size_t dyplo_dma_memory_size = 256 * 1024;
  * version that skips the memory barriers. */
 #define ioread32_quick	__raw_readl
 #define iowrite32_quick	__raw_writel
-
-struct dyplo_dev; /* forward */
-
-struct dyplo_config_dev
-{
-	struct dyplo_dev* parent; /* Owner of this struct */
-	u32 __iomem *base;
-	u32 __iomem *control_base;
-	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
-	irqreturn_t(*isr)(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev); /* IRQ handler, if any */
-	void* private_data; /* Extra information for sub-device */
-};
 
 struct dyplo_fifo_dev
 {
@@ -154,25 +136,6 @@ struct dyplo_dma_dev
 	wait_queue_head_t wait_queue_from_logic;
 	struct dyplo_dma_from_logic_operation dma_from_logic_current_op;
 	bool dma_from_logic_full;
-};
-
-struct dyplo_dev
-{
-	struct cdev cdev_control;
-	struct cdev cdev_config;
-	dev_t devt;
-	dev_t devt_last;
-	struct class *class;
-	struct semaphore fop_sem;
-	struct resource *mem;
-	u32 __iomem *base;
-	int irq;
-	int number_of_config_devices;
-	unsigned int stream_id_width;
-	struct dyplo_config_dev *config_devices;
-	u8 count_fifo_write_devices;
-	u8 count_fifo_read_devices;
-	u8 number_of_dma_devices;
 };
 
 union dyplo_route_item_u {
@@ -707,11 +670,15 @@ static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
 	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
-	unsigned long physical =
+	unsigned long vsize = vma->vm_end - vma->vm_start;
+	unsigned long physical;
+
+	if (!cfg_dev->parent->mem)
+		return -ENODEV; /* Currently only supported on "platform" driver */
+	physical =
 		cfg_dev->parent->mem->start +
 		dyplo_get_config_mem_offset(cfg_dev) +
 		off;
-	unsigned long vsize = vma->vm_end - vma->vm_start;
 	if (vsize > (DYPLO_CONFIG_SIZE - off))
 		return -EINVAL; /*  spans too high */
 	vma->vm_flags |= VM_IO;
@@ -2366,10 +2333,8 @@ static const struct file_operations dyplo_proc_fops = {
 	.release = single_release,
 };
 
-static int dyplo_probe(struct platform_device *pdev)
+int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 {
-	struct dyplo_dev *dev;
-	struct device *device = &pdev->dev;
 	dev_t devt;
 	int retval;
 	int device_index;
@@ -2378,24 +2343,7 @@ static int dyplo_probe(struct platform_device *pdev)
 	struct proc_dir_entry *proc_file_entry;
 	struct device *char_device;
 
-	dev = devm_kzalloc(device, sizeof(*dev), GFP_KERNEL);
-	if (!dev)
-		return -ENOMEM;
-	dev_set_drvdata(device, dev);
 	sema_init(&dev->fop_sem, 1);
-
-	/* resource configuration */
-	dev->mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dev->base = devm_ioremap_resource(device, dev->mem);
-	if (IS_ERR(dev->base)) {
-		dev_err(device, "Failed to map device memory\n");
-		return PTR_ERR(dev->base);
-	}
-	dev->irq = platform_get_irq(pdev, 0);
-	if (dev->irq < 0) {
-		dev_err(device, "IRQ resource missing\n");
-		return -ENOENT;
-	}
 
 	control_id = ioread32_quick(dev->base + (DYPLO_REG_ID>>2));
 	if ((control_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) !=
@@ -2471,7 +2419,8 @@ static int dyplo_probe(struct platform_device *pdev)
 		goto failed_device_create;
 	}
 
-	retval = request_irq(dev->irq, dyplo_isr, 0, pdev->name, dev);
+	retval = devm_request_irq(device, dev->irq, dyplo_isr, 0,
+		DRIVER_CLASS_NAME, dev);
 	if (retval) {
 		dev_err(device, "Cannot claim IRQ\n");
 		goto failed_request_irq;
@@ -2520,7 +2469,6 @@ failed_device_create_cfg:
 		device_destroy(dev->class, dev->devt + 1 + device_index);
 		--device_index;
 	}
-	free_irq(dev->irq, dev);
 failed_request_irq:
 failed_device_create:
 	class_destroy(dev->class);
@@ -2530,15 +2478,9 @@ failed_cdev:
 	return retval;
 }
 
-static int dyplo_remove(struct platform_device *pdev)
+int dyplo_core_remove(struct device *device, struct dyplo_dev *dev)
 {
-	struct device *device = &pdev->dev;
-	struct dyplo_dev *dev;
 	int i;
-
-	dev = dev_get_drvdata(device);
-	if (!dev)
-		return -ENODEV;
 
 	remove_proc_entry(DRIVER_CLASS_NAME, NULL);
 
@@ -2551,25 +2493,6 @@ static int dyplo_remove(struct platform_device *pdev)
 		device_destroy(dev->class, dev->devt + i);
 	class_destroy(dev->class);
 	unregister_chrdev_region(dev->devt, dev->devt_last);
-	free_irq(dev->irq, dev);
 
 	return 0;
 }
-
-
-static const struct of_device_id dyplo_ids[] = {
-	{ .compatible = "topic,dyplo-1.00.a" },
-	{ },
-};
-MODULE_DEVICE_TABLE(of, dyplo_ids);
-
-static struct platform_driver dyplo_driver = {
-	.driver = {
-		.name = "dyplo",
-		.owner = THIS_MODULE,
-		.of_match_table = dyplo_ids,
-	},
-	.probe = dyplo_probe,
-	.remove = dyplo_remove,
-};
-module_platform_driver(dyplo_driver);

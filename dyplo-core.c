@@ -2479,6 +2479,7 @@ failed_cdev:
 	unregister_chrdev_region(devt, dev->number_of_config_devices + 1);
 	return retval;
 }
+EXPORT_SYMBOL(dyplo_core_probe);
 
 int dyplo_core_remove(struct device *device, struct dyplo_dev *dev)
 {
@@ -2498,3 +2499,4 @@ int dyplo_core_remove(struct device *device, struct dyplo_dev *dev)
 
 	return 0;
 }
+EXPORT_SYMBOL(dyplo_core_remove);

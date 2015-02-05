@@ -1,8 +1,13 @@
 KERNEL_SRC ?= "/lib/modules/$(shell uname -r)/build"
 
-obj-m += dyplo.o
+# Only build the PCIe module when PCI_MSI is defined
+OPTIONALMODULE-$(CONFIG_PCI_MSI) = dyplo-pcie.o
 
-dyplo-objs := dyplo-core.o dyplo-of.o
+obj-m += dyplo.o $(OPTIONALMODULE-y) $(OPTIONALMODULE-m)
+
+dyplo-y := dyplo-core.o
+# Only add the devicetree/platform binding when OpenFirmware is defined
+dyplo-$(CONFIG_OF) += dyplo-of.o
 
 all:
 	$(MAKE) -C $(KERNEL_SRC) M=$(PWD) modules

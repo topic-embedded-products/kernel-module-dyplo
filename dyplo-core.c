@@ -526,7 +526,7 @@ static long dyplo_ctl_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 	struct dyplo_dev *dev = filp->private_data;
 	if (unlikely(dev == NULL))
 		return -ENODEV;
-	pr_debug("%s cmd=%#x (%d) arg=%#x\n", __func__, cmd, _IOC_NR(cmd), arg);
+	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
 	return dyplo_ctl_ioctl_impl(dev, cmd, arg);
 }
 
@@ -693,7 +693,7 @@ static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
 	int status;
 
-	pr_debug("%s cmd=%#x (%d) arg=%#x\n", __func__, cmd, _IOC_NR(cmd), arg);
+	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
 
 	if (unlikely(cfg_dev == NULL))
 		return -ENODEV;
@@ -745,7 +745,7 @@ static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			status = -ENOTTY;
 	}
 
-	pr_debug("%s cmd=%#x (%d) arg=%#x result=%#x\n", __func__, cmd, _IOC_NR(cmd), arg, status);
+	pr_debug("%s cmd=%#x (%d) arg=%#lx result=%#x\n", __func__, cmd, _IOC_NR(cmd), arg, status);
 	return status;
 }
 
@@ -878,7 +878,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 #ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 	int kernel_buffer[DYPLO_FIFO_READ_MAX_BURST_SIZE/sizeof(int)];
 #endif
-	pr_debug("%s(%d)\n", __func__, count);
+	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
 
 #ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
 	if (fifo_dev->eof)
@@ -967,7 +967,7 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 			if (count < bytes)
 				bytes = count;
 			words = bytes >> 2;
-			pr_debug("%s copy_to_user %p (%d)\n", __func__, mapped_memory, bytes);
+			pr_debug("%s copy_to_user %p (%u)\n", __func__, mapped_memory, (unsigned int)bytes);
 #ifdef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 			if (unlikely(__copy_to_user(buf, mapped_memory, bytes))) {
 				status = -EFAULT;
@@ -1040,7 +1040,7 @@ static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 	if (unlikely(fifo_dev == NULL))
 		return -ENODEV;
 
-	pr_debug("%s cmd=%#x (%d) arg=%#x\n", __func__, cmd, _IOC_NR(cmd), arg);
+	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
 	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
 		return -ENOTTY;
 
@@ -1223,7 +1223,7 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	int kernel_buffer[DYPLO_FIFO_WRITE_MAX_BURST_SIZE/sizeof(int)];
 #endif
 
-	pr_debug("%s(%d)\n", __func__, count);
+	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
 
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
@@ -1274,7 +1274,7 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 			if (count < bytes)
 				bytes = count;
 			words = bytes >> 2;
-			pr_debug("%s copy_from_user %p (%d)\n", __func__, mapped_memory, bytes);
+			pr_debug("%s copy_from_user %p (%u)\n", __func__, mapped_memory, (unsigned int)bytes);
 #ifdef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 			if (unlikely(__copy_from_user(mapped_memory, buf, bytes))) {
 				status = -EFAULT;
@@ -1471,8 +1471,8 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 			printk(KERN_WARNING "%s: Got 0 as result address\n", __func__);
 			break;
 		}
-		kfifo_get(&dma_dev->dma_to_logic_wip, &op);
-		pr_debug("%s addr=%#x wip=%#x,%u\n", __func__, addr, op.addr, op.size);
+		BUG_ON(!kfifo_get(&dma_dev->dma_to_logic_wip, &op));
+		pr_debug("%s addr=%#x wip=%#x,%u\n", __func__, addr, (u32)op.addr, op.size);
 		BUG_ON(op.addr != addr);
 		dma_dev->dma_to_logic_tail += op.size;
 		if (dma_dev->dma_to_logic_tail == dma_dev->dma_to_logic_memory_size)
@@ -1508,14 +1508,14 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 	DEFINE_WAIT(wait);
 	const bool is_blocking = (filp->f_flags & O_NONBLOCK) == 0;
 
-	pr_debug("%s(%u)\n", __func__, count);
+	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
 
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
 	count &= ~0x03;
-	
+
 	while (count) {
-		bytes_to_copy = min(count, dyplo_dma_block_size);
+		bytes_to_copy = min((unsigned int)count, dyplo_dma_block_size);
 		for(;;) {
 			if (is_blocking)
 				prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
@@ -1579,7 +1579,8 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 		}
 		if (is_blocking)
 			finish_wait(&dma_dev->wait_queue_to_logic, &wait);
-		pr_debug("%s sending addr=%#x size=%u\n", __func__, dma_op.addr, dma_op.size);
+		pr_debug("%s sending addr=%#x size=%u\n", __func__,
+			(unsigned int)dma_op.addr, dma_op.size);
 		iowrite32_quick(dma_op.addr, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR>>2));
 		iowrite32(dma_op.size, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
 		kfifo_put(&dma_dev->dma_to_logic_wip, dma_op);
@@ -1621,7 +1622,8 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 	while (!dma_dev->dma_from_logic_full) {
 		if (!num_free_entries)
 			break; /* No more room for commands */
-		pr_debug("%s sending addr=%#x size=%u\n", __func__, dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dyplo_dma_block_size);
+		pr_debug("%s sending addr=%#x size=%u\n", __func__,
+			(unsigned int)dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dyplo_dma_block_size);
 		iowrite32(dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR>>2));
 		iowrite32(dyplo_dma_block_size, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
 		dma_dev->dma_from_logic_head += dyplo_dma_block_size;
@@ -1649,7 +1651,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 	DEFINE_WAIT(wait);
 	const bool is_blocking = (filp->f_flags & O_NONBLOCK) == 0;
 
-	pr_debug("%s(%u)\n", __func__, count);
+	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
 	
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
@@ -1796,7 +1798,7 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 	if (unlikely(dma_dev == NULL))
 		return -ENODEV;
 
-	pr_debug("%s cmd=%#x (%d) arg=%#x\n", __func__, cmd, _IOC_NR(cmd), arg);
+	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
 
 	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
 		return -ENOTTY;

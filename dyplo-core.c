@@ -67,10 +67,10 @@ static const char DRIVER_DMA_CLASS_NAME[] = "dyplo-dma";
 static const char DRIVER_DMA_DEVICE_NAME[] = "dyplod%d";
 
 #ifdef DEBUG
-static const unsigned int dyplo_dma_block_size = 1024;
+static const unsigned int dyplo_dma_default_block_size = 1024;
 static const size_t dyplo_dma_memory_size = 4096;
 #else
-static const unsigned int dyplo_dma_block_size = 64 * 1024;
+static const unsigned int dyplo_dma_default_block_size = 64 * 1024;
 static const size_t dyplo_dma_memory_size = 256 * 1024;
 #endif
 
@@ -125,6 +125,7 @@ struct dyplo_dma_dev
 	unsigned int dma_to_logic_memory_size;
 	unsigned int dma_to_logic_head;
 	unsigned int dma_to_logic_tail;
+	unsigned int dma_to_logic_block_size;
 	DECLARE_KFIFO(dma_to_logic_wip, struct dyplo_dma_to_logic_operation, 8);
 	wait_queue_head_t wait_queue_to_logic;
 	
@@ -133,6 +134,7 @@ struct dyplo_dma_dev
 	unsigned int dma_from_logic_memory_size;
 	unsigned int dma_from_logic_head;
 	unsigned int dma_from_logic_tail;
+	unsigned int dma_from_logic_block_size;
 	wait_queue_head_t wait_queue_from_logic;
 	struct dyplo_dma_from_logic_operation dma_from_logic_current_op;
 	bool dma_from_logic_full;
@@ -1433,9 +1435,13 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 	dma_dev->open_mode |= rw_mode; /* Set in-use bits */
 	filp->private_data = dma_dev; /* for other methods */
 	nonseekable_open(inode, filp);
-	if (rw_mode & FMODE_WRITE) /* Reset usersignal */
+	if (rw_mode & FMODE_WRITE) {
+		/* Reset usersignal */
 		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
 			cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
+		/* Default to generic size */
+		dma_dev->dma_to_logic_block_size = dyplo_dma_default_block_size;
+	}
 exit_open:
 	up(&dev->fop_sem);
 	return status;
@@ -1515,7 +1521,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 	count &= ~0x03;
 
 	while (count) {
-		bytes_to_copy = min((unsigned int)count, dyplo_dma_block_size);
+		bytes_to_copy = min((unsigned int)count, dma_dev->dma_to_logic_block_size);
 		for(;;) {
 			if (is_blocking)
 				prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
@@ -1623,10 +1629,10 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 		if (!num_free_entries)
 			break; /* No more room for commands */
 		pr_debug("%s sending addr=%#x size=%u\n", __func__,
-			(unsigned int)dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dyplo_dma_block_size);
+			(unsigned int)dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dma_dev->dma_from_logic_block_size);
 		iowrite32(dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR>>2));
-		iowrite32(dyplo_dma_block_size, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
-		dma_dev->dma_from_logic_head += dyplo_dma_block_size;
+		iowrite32(dma_dev->dma_from_logic_block_size, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
+		dma_dev->dma_from_logic_head += dma_dev->dma_from_logic_block_size;
 		if (dma_dev->dma_from_logic_head == dma_dev->dma_from_logic_memory_size)
 			dma_dev->dma_from_logic_head = 0;
 		if (dma_dev->dma_from_logic_head == dma_dev->dma_from_logic_tail)
@@ -1666,7 +1672,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 				current_op->addr = ((char*)dma_dev->dma_from_logic_memory) + tail;
 				current_op->user_signal = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_USERBITS>>2));
 				current_op->size = ioread32(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE>>2));
-				tail += dyplo_dma_block_size;
+				tail += dma_dev->dma_from_logic_block_size;
 				if (tail == dma_dev->dma_from_logic_memory_size)
 					tail = 0;
 				current_op->next_tail = tail;
@@ -1821,7 +1827,27 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			else
 				return dma_dev->dma_from_logic_memory_size;
 		case DYPLO_IOC_TRESHOLD_TELL:
-			return -EINVAL; /* Not implemented yet */
+			if ((filp->f_mode & FMODE_WRITE) == 0) {
+				if (dma_dev->dma_from_logic_block_size == arg)
+					return 0;
+				if ((dma_dev->dma_from_logic_head != dma_dev->dma_from_logic_tail) ||
+						dma_dev->dma_from_logic_full)
+					return -EBUSY; /* Cannot change value */
+				if (dma_dev->dma_from_logic_memory_size % arg)
+					return -EINVAL; /* Must be divisable */
+				dma_dev->dma_from_logic_block_size = arg;
+				return 0;
+			} else {
+				if (dma_dev->dma_to_logic_block_size == arg)
+					return 0;
+				if ((dma_dev->dma_to_logic_head != dma_dev->dma_to_logic_tail) ||
+						!kfifo_is_empty(&dma_dev->dma_to_logic_wip))
+					return -EBUSY;
+				if (dma_dev->dma_to_logic_memory_size % arg)
+					return -EINVAL; /* Must be divisable */
+				dma_dev->dma_to_logic_block_size = arg;
+				return 0;
+			}
 		case DYPLO_IOC_RESET_FIFO_WRITE:
 			iowrite32_quick(1, (dma_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_WRITE/4)));
 			return 0;
@@ -2067,6 +2093,7 @@ static int create_sub_devices_dma_fifo(
 		goto error_dma_to_logic_alloc;
 	}
 	dma_dev->dma_to_logic_memory_size = dyplo_dma_memory_size;
+	dma_dev->dma_to_logic_block_size = dyplo_dma_default_block_size;
 
 	dma_dev->dma_from_logic_memory = dma_alloc_coherent(device,
 		dyplo_dma_memory_size, &dma_dev->dma_from_logic_handle, GFP_DMA | GFP_KERNEL);
@@ -2076,6 +2103,7 @@ static int create_sub_devices_dma_fifo(
 		goto error_dma_from_logic_alloc;
 	}
 	dma_dev->dma_from_logic_memory_size = dyplo_dma_memory_size;
+	dma_dev->dma_from_logic_block_size = dyplo_dma_default_block_size;
 
 	cdev_init(&dma_dev->cdev_dma, &dyplo_dma_fops);
 	dma_dev->cdev_dma.owner = THIS_MODULE;

@@ -282,16 +282,11 @@ static int dyplo_ctl_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct dyplo_dev *dev = filp->private_data;
 
-	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
-	unsigned long physical = dev->mem->start + off;
-	unsigned long vsize = vma->vm_end - vma->vm_start;
-	if (vsize > (DYPLO_CONFIG_SIZE - off))
-		return -EINVAL; /*  spans too high */
-	vma->vm_flags |= VM_IO;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	if (remap_pfn_range(vma, vma->vm_start, physical >> PAGE_SHIFT, vsize, vma->vm_page_prot))
-		return -EAGAIN;
-	return 0;
+	if (dev->mem)
+		return vm_iomap_memory(vma, dev->mem->start, DYPLO_CONFIG_SIZE);
+	else
+		return vm_iomap_memory(vma, virt_to_phys(dev->base), DYPLO_CONFIG_SIZE);
 }
 
 static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
@@ -671,23 +666,16 @@ loff_t dyplo_cfg_llseek(struct file *filp, loff_t off, int whence)
 static int dyplo_cfg_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	unsigned long off = vma->vm_pgoff << PAGE_SHIFT;
-	unsigned long vsize = vma->vm_end - vma->vm_start;
-	unsigned long physical;
 
-	if (!cfg_dev->parent->mem)
-		return -ENODEV; /* Currently only supported on "platform" driver */
-	physical =
-		cfg_dev->parent->mem->start +
-		dyplo_get_config_mem_offset(cfg_dev) +
-		off;
-	if (vsize > (DYPLO_CONFIG_SIZE - off))
-		return -EINVAL; /*  spans too high */
-	vma->vm_flags |= VM_IO;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-	if (remap_pfn_range(vma, vma->vm_start, physical >> PAGE_SHIFT, vsize, vma->vm_page_prot))
-		return -EAGAIN;
-	return 0;
+	if (cfg_dev->parent->mem)
+		return vm_iomap_memory(vma,
+			cfg_dev->parent->mem->start + dyplo_get_config_mem_offset(cfg_dev),
+			DYPLO_CONFIG_SIZE);
+	else
+		return vm_iomap_memory(vma,
+			virt_to_phys(cfg_dev->base),
+			DYPLO_CONFIG_SIZE);
 }
 
 static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)

@@ -87,6 +87,12 @@ static int dyplo_pci_probe(struct pci_dev *pdev,
 		return rc;
 	}
 	dev->base = pcim_iomap_table(pdev)[0];
+	dev->mem = devm_kzalloc(device, sizeof(*dev->mem), GFP_KERNEL);
+	if (!dev->mem)
+		return -ENOMEM;
+	dev->mem->start = pci_resource_start(pdev, 0);
+	dev->mem->end = pci_resource_end(pdev, 0);
+	dev->mem->flags = IORESOURCE_MEM;
 
 	pci_set_master(pdev);
 

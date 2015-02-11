@@ -66,13 +66,8 @@ static const char DRIVER_FIFO_READ_NAME[] = "dyplor%d";
 static const char DRIVER_DMA_CLASS_NAME[] = "dyplo-dma";
 static const char DRIVER_DMA_DEVICE_NAME[] = "dyplod%d";
 
-#ifdef DEBUG
-static const unsigned int dyplo_dma_default_block_size = 1024;
-static const size_t dyplo_dma_memory_size = 4096;
-#else
 static const unsigned int dyplo_dma_default_block_size = 64 * 1024;
 static const size_t dyplo_dma_memory_size = 256 * 1024;
-#endif
 
 /* How to do IO. We rarely need any memory barriers, so add a "quick"
  * version that skips the memory barriers. */
@@ -1401,6 +1396,10 @@ static irqreturn_t dyplo_fifo_isr_v2(struct dyplo_dev *dev, struct dyplo_config_
 }
 
 
+static unsigned int dyplo_dma_get_index(const struct dyplo_dma_dev *dma_dev)
+{
+	return dyplo_get_config_index(dma_dev->config_parent);
+}
 
 static int dyplo_dma_open(struct inode *inode, struct file *filp)
 {
@@ -1461,18 +1460,29 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 		/* Fetch result from queue */
 		struct dyplo_dma_to_logic_operation op;
 		u32 addr = ioread32(control_base + (DYPLO_DMA_TOLOGIC_RESULT_ADDR>>2));
-		if (addr == 0) {
-			printk(KERN_WARNING "%s: Got 0 as result address\n", __func__);
-			break;
+		if (unlikely(!kfifo_get(&dma_dev->dma_to_logic_wip, &op))) {
+			pr_err("Nothing in fifo of DMA node %u but still %u results\n",
+				dyplo_dma_get_index(dma_dev), num_results);
+			BUG();
 		}
-		BUG_ON(!kfifo_get(&dma_dev->dma_to_logic_wip, &op));
 		pr_debug("%s addr=%#x wip=%#x,%u\n", __func__, addr, (u32)op.addr, op.size);
-		BUG_ON(op.addr != addr);
+		if (unlikely(op.addr != addr)) {
+			pr_err("Mismatch in result of DMA node %u: phys=%pa expected %x actual %x\n",
+				dyplo_dma_get_index(dma_dev),
+				&dma_dev->dma_to_logic_handle,
+				(u32)op.addr, addr);
+			BUG();
+		}
 		dma_dev->dma_to_logic_tail += op.size;
 		if (dma_dev->dma_to_logic_tail == dma_dev->dma_to_logic_memory_size)
 			dma_dev->dma_to_logic_tail = 0;
 		pr_debug("%s tail=%u\n", __func__, dma_dev->dma_to_logic_tail);
-		BUG_ON(dma_dev->dma_to_logic_tail > dma_dev->dma_to_logic_memory_size);
+		if (unlikely(dma_dev->dma_to_logic_tail > dma_dev->dma_to_logic_memory_size)) {
+			pr_err("Overflow in DMA node %u: tail %u size %u\n",
+				dyplo_dma_get_index(dma_dev),
+				dma_dev->dma_to_logic_tail, dma_dev->dma_to_logic_memory_size);
+			BUG();
+		}
 	}
 	/* Calculate available space */
 	if (dma_dev->dma_to_logic_tail > dma_dev->dma_to_logic_head)
@@ -1764,7 +1774,7 @@ static unsigned int dyplo_dma_poll(struct file *filp, poll_table *wait)
 		}
 	}
 
-	pr_debug("%s -> %#x\n", __func__, mask);
+	pr_debug("%s(%x) -> %#x\n", __func__, filp->f_mode, mask);
 
 	return mask;
 }
@@ -1783,7 +1793,7 @@ static int dyplo_dma_add_route(struct dyplo_dma_dev *dma_dev, int source, int de
 static int dyplo_dma_get_route_id(struct dyplo_dma_dev *dma_dev)
 {
 	/* Only one fifo, so upper 8 bits are always 0 */
-	return dyplo_get_config_index(dma_dev->config_parent);
+	return dyplo_dma_get_index(dma_dev);
 }
 
 static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -2208,7 +2218,8 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 			int lw = dyplo_fifo_write_level(&fifo_dev->fifo_devices[i]);
 			int tw = *(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + i);
 			int us = *(control_base + (DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) + i);
-			seq_printf(m, "w=%3d %x (%3d%c%c) ",
+			seq_printf(m, "%c=%3d %x (%3d%c%c) ",
+				fifo_dev->fifo_devices[i].is_open ? 'W' : 'w',
 				lw, us, tw,
 				irq_w_mask & mask ? 'w' : '.',
 				irq_w_status & mask ? 'i' : '.');
@@ -2221,7 +2232,8 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		if (i < fifo_dev->number_of_fifo_read_devices) {
 			u32 lr = dyplo_fifo_read_level(&fifo_dev->fifo_devices[fifo_dev->number_of_fifo_write_devices + i]);
 			int tr = *(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + i);
-			seq_printf(m, "r=%3d %x (%3d%c%c) ",
+			seq_printf(m, "%c=%3d %x (%3d%c%c) ",
+				fifo_dev->fifo_devices[fifo_dev->number_of_fifo_write_devices + i].is_open ? 'R' : 'r',
 				lr & 0xFFFF, lr >> 16, tr,
 				irq_r_mask & mask ? 'w' : '.',
 				irq_r_status & mask ? 'i' : '.');
@@ -2241,24 +2253,24 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 	struct dyplo_dma_dev *dma_dev = cfg_dev->private_data;
 	u32 status;
 	
-	seq_printf(m, "  From CPU to logic:\n   size=%u head=%u tail=%u\n",
+	seq_printf(m, "  CPU to PL (%c): sz=%u hd=%u tl=%u ",
+		(dma_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
 		dma_dev->dma_to_logic_memory_size,
 		dma_dev->dma_to_logic_head,
 		dma_dev->dma_to_logic_tail);
 	status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
-	seq_printf(m, "   results=%u free=%u idle=%c\n",
+	seq_printf(m, "re=%u fr=%u idle=%c\n",
 		status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 
-	seq_printf(m, "  From logic to CPU:\n   size=%u head=%u tail=%u full=%c\n",
+	seq_printf(m, "  PL to CPU (%c): sz=%u hd=%u tl=%u full=%c ",
+		(dma_dev->open_mode & FMODE_READ) ? 'r' : '-',
 		dma_dev->dma_from_logic_memory_size,
 		dma_dev->dma_from_logic_head,
 		dma_dev->dma_from_logic_tail,
 		dma_dev->dma_from_logic_full ? 'Y':'N');
 	status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
-	seq_printf(m, "   results=%u free=%u idle=%c\n",
+	seq_printf(m, "re=%u fr=%u idle=%c\n",
 		status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
-	
-	
 }
 
 

@@ -56,9 +56,9 @@ poll:
 Outputs debugging information about the device's status. Will read
 various fields via the AXI bus and display the contents in ASCII.
 Displays:
-ncfg=3 nfifo=64                                                                 
+ncfg=11, nfifo w=8 r=8, ndma=4                                                  
   Number of configurable blocks (3) including CPU interface and number
-  of FIFO's (64), both read and write, in the CPU block.
+  of FIFO's (8), both read and write and number of DMA nodes (4). 
 fifo=11 w=255 (  3.i) r=   0 (   0w.)                                           
   FIFO state. For each fifo, displays the index (11), the number of
   32-bit words available in the write buffer (255), the threshold that

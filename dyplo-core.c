@@ -121,7 +121,7 @@ struct dyplo_dma_dev
 	unsigned int dma_to_logic_head;
 	unsigned int dma_to_logic_tail;
 	unsigned int dma_to_logic_block_size;
-	DECLARE_KFIFO(dma_to_logic_wip, struct dyplo_dma_to_logic_operation, 8);
+	DECLARE_KFIFO(dma_to_logic_wip, struct dyplo_dma_to_logic_operation, 16);
 	wait_queue_head_t wait_queue_to_logic;
 	
 	dma_addr_t dma_from_logic_handle;

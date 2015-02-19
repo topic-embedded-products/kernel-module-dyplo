@@ -1602,7 +1602,11 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 			(unsigned int)dma_op.addr, dma_op.size);
 		iowrite32_quick(dma_op.addr, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR>>2));
 		iowrite32(dma_op.size, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
-		kfifo_put(&dma_dev->dma_to_logic_wip, dma_op);
+		if (unlikely(kfifo_put(&dma_dev->dma_to_logic_wip, dma_op) == 0)) {
+			pr_err("dma_to_logic_wip kfifo was full, cannot put %#x %u\n",
+				(u32)dma_op.addr, dma_op.size);
+			BUG();
+		}
 		
 		/* Update pointers for next chunk, if any */
 		dma_dev->dma_to_logic_head += bytes_to_copy;

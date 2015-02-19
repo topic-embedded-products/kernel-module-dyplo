@@ -1467,10 +1467,25 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 		}
 		pr_debug("%s addr=%#x wip=%#x,%u\n", __func__, addr, (u32)op.addr, op.size);
 		if (unlikely(op.addr != addr)) {
-			pr_err("Mismatch in result of DMA node %u: phys=%pa expected %x actual %x\n",
+			pr_err("Mismatch in result of DMA node %u: phys=%pa expected %#x (size %d) actual %#x\n",
 				dyplo_dma_get_index(dma_dev),
 				&dma_dev->dma_to_logic_handle,
-				(u32)op.addr, addr);
+				(u32)op.addr, op.size, addr);
+			pr_err("head=%#x (%d) tail=%#x (%d)\n",
+				dma_dev->dma_to_logic_head,
+				dma_dev->dma_to_logic_head,
+				dma_dev->dma_to_logic_tail,
+				dma_dev->dma_to_logic_tail);
+			for (;;) {
+				if (!kfifo_get(&dma_dev->dma_to_logic_wip, &op))
+					break;
+				pr_err("Internal entry: %#x (size %d)\n", (u32)op.addr, op.size);
+			}
+			while (num_results) {
+				addr = ioread32(control_base + (DYPLO_DMA_TOLOGIC_RESULT_ADDR>>2));
+				pr_err("Logic result: %#x\n", addr);
+				--num_results;
+			}
 			BUG();
 		}
 		dma_dev->dma_to_logic_tail += op.size;

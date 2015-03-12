@@ -2416,10 +2416,6 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_PR_NODES_COUNT>>2)) +
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_FIXED_NODES_COUNT>>2));
 
-	/* HACK for DMA node */
-	if (dyplo_version >= 0x7DE0401)
-		++dev->number_of_config_devices;
-
 	dev->config_devices = devm_kcalloc(device,
 		dev->number_of_config_devices, sizeof(struct dyplo_config_dev),
 		GFP_KERNEL);

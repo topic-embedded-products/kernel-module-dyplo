@@ -20,6 +20,7 @@ struct dyplo_config_dev
 
 struct dyplo_dev
 {
+	struct device *device;
 	struct cdev cdev_control;
 	struct cdev cdev_config;
 	dev_t devt;

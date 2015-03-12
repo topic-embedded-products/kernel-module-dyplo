@@ -1410,7 +1410,8 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 	int status = 0;
 	mode_t rw_mode = filp->f_mode & (FMODE_READ | FMODE_WRITE);
 
-	pr_debug("%s(mode=%#x)\n", __func__, rw_mode);
+	pr_debug("%s(mode=%#x flags=%#x)\n", __func__,
+		filp->f_mode, filp->f_flags);
 
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
@@ -1422,6 +1423,7 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 	dma_dev->open_mode |= rw_mode; /* Set in-use bits */
 	filp->private_data = dma_dev; /* for other methods */
 	nonseekable_open(inode, filp);
+
 	if (rw_mode & FMODE_WRITE) {
 		/* Reset usersignal */
 		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
@@ -1941,12 +1943,13 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 }
 
 static int create_sub_devices_cpu_fifo(
-	struct device *device, struct dyplo_config_dev *cfg_dev,
+	struct dyplo_config_dev *cfg_dev,
 	u32 sub_device_id)
 {
 	int retval;
 	struct dyplo_fifo_control_dev *fifo_ctl_dev;
 	struct dyplo_dev *dev = cfg_dev->parent;
+	struct device *device = dev->device;
 	dev_t first_fifo_devt;
 	int fifo_index = 0;
 	int number_of_write_fifos;
@@ -2070,10 +2073,11 @@ error_register_chrdev_region:
 }
 
 static int create_sub_devices_dma_fifo(
-	struct device *device, struct dyplo_config_dev *cfg_dev,
+	struct dyplo_config_dev *cfg_dev,
 	u32 sub_device_id)
 {
 	struct dyplo_dev *dev = cfg_dev->parent;
+	struct device *device = dev->device;
 	int retval;
 	dev_t first_fifo_devt;
 	struct dyplo_dma_dev* dma_dev;
@@ -2161,10 +2165,11 @@ error_register_chrdev_region:
 }
 
 static void destroy_sub_devices_dma_fifo(
-	struct device *device, struct dyplo_config_dev *cfg_dev,
+	struct dyplo_config_dev *cfg_dev,
 	u32 sub_device_id)
 {
 	struct dyplo_dma_dev* dma_dev = cfg_dev->private_data;
+	struct device *device = cfg_dev->parent->device;
 	/* Stop the DMA cores to make sure the memory is no longer being used */
 	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
 	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
@@ -2174,21 +2179,21 @@ static void destroy_sub_devices_dma_fifo(
 		dma_dev->dma_to_logic_memory, dma_dev->dma_to_logic_handle);
 }
 
-static int create_sub_devices(struct device *device, struct dyplo_config_dev *cfg_dev)
+static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
 {
 	u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
 
 	switch (sub_device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) {
 		case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
-			return create_sub_devices_cpu_fifo(device, cfg_dev, sub_device_id);
+			return create_sub_devices_cpu_fifo(cfg_dev, sub_device_id);
 		case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
-			return create_sub_devices_dma_fifo(device, cfg_dev, sub_device_id);
+			return create_sub_devices_dma_fifo(cfg_dev, sub_device_id);
 		default:
 			return 0; /* No subdevice needed */
 	}
 }
 
-static void destroy_sub_devices(struct device *device, struct dyplo_config_dev *cfg_dev)
+static void destroy_sub_devices(struct dyplo_config_dev *cfg_dev)
 {
 	u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
 
@@ -2196,7 +2201,7 @@ static void destroy_sub_devices(struct device *device, struct dyplo_config_dev *
 		case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
 			break; /* No particular destroy yet */
 		case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
-			return destroy_sub_devices_dma_fifo(device, cfg_dev, sub_device_id);
+			return destroy_sub_devices_dma_fifo(cfg_dev, sub_device_id);
 		default:
 			break;
 	}
@@ -2393,6 +2398,7 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 	struct device *char_device;
 
 	sema_init(&dev->fop_sem, 1);
+	dev->device = device;
 
 	control_id = ioread32_quick(dev->base + (DYPLO_REG_ID>>2));
 	if ((control_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) !=
@@ -2490,7 +2496,7 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 			retval = PTR_ERR(device);
 			goto failed_device_create_cfg;
 		}
-		retval = create_sub_devices(device, cfg_dev);
+		retval = create_sub_devices(cfg_dev);
 		if (retval) {
 			dev_err(device, "unable to create sub-device %d: %d\n",
 				device_index, retval);
@@ -2531,7 +2537,7 @@ int dyplo_core_remove(struct device *device, struct dyplo_dev *dev)
 	remove_proc_entry(DRIVER_CLASS_NAME, NULL);
 
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		destroy_sub_devices(device, &dev->config_devices[i]);
+		destroy_sub_devices(&dev->config_devices[i]);
 
 	for (i = dev->number_of_config_devices +
 		dev->count_fifo_write_devices + dev->count_fifo_read_devices;

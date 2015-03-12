@@ -81,6 +81,9 @@ struct dyplo_fifo_dev
 	int index;
 	unsigned int words_transfered;
 	unsigned int poll_treshold;
+#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
+	void* transfer_buffer;
+#endif
 	u16 user_signal;
 	bool eof;
 	bool is_open;
@@ -821,6 +824,13 @@ static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 		result = -EBUSY;
 		goto error;
 	}
+#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
+	fifo_dev->transfer_buffer = kmalloc(DYPLO_FIFO_READ_MAX_BURST_SIZE, GFP_KERNEL);
+	if (unlikely(fifo_dev->transfer_buffer == NULL)) {
+		result = -ENOMEM;
+		goto error;
+	}
+#endif
 	fifo_dev->user_signal = 0;
 	fifo_dev->eof = false;
 	fifo_dev->is_open = true;
@@ -835,6 +845,8 @@ error:
 static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	struct dyplo_dev* dev = fifo_dev->config_parent->parent;
+
 	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
 #ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
 	if (!fifo_dev->eof) {
@@ -847,9 +859,17 @@ static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 			ioread32_quick(dyplo_fifo_memory_location(fifo_dev));
 			pr_debug("%s consume extra EOF sentinel\n", __func__);
 		}
+		fifo_dev->eof = true;
 	}
 #endif
+	if (down_interruptible(&dev->fop_sem))
+		return -ERESTARTSYS;
+#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
+	kfree(fifo_dev->transfer_buffer);
+	fifo_dev->transfer_buffer = NULL;
+#endif
 	fifo_dev->is_open = false;
+	up(&dev->fop_sem);
 	return 0;
 }
 
@@ -860,9 +880,6 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
 	int status = 0;
 	size_t len = 0;
-#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
-	int kernel_buffer[DYPLO_FIFO_READ_MAX_BURST_SIZE/sizeof(int)];
-#endif
 	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
 
 #ifdef DYPLO_TRANSFER_EOF_MARKERS_AS_USER_SIGNALS
@@ -959,8 +976,8 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 				goto error;
 			}
 #else
-			ioread32_rep(mapped_memory, kernel_buffer, words);
-			if (unlikely(__copy_to_user(buf, kernel_buffer, bytes))) {
+			ioread32_rep(mapped_memory, fifo_dev->transfer_buffer, words);
+			if (unlikely(__copy_to_user(buf, fifo_dev->transfer_buffer, bytes))) {
 				status = -EFAULT;
 				goto error;
 			}
@@ -1139,6 +1156,13 @@ static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 	filp->private_data = fifo_dev;
 	fifo_dev->user_signal = DYPLO_USERSIGNAL_ZERO;
 	fifo_dev->eof = false;
+#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
+	fifo_dev->transfer_buffer = kmalloc(DYPLO_FIFO_WRITE_MAX_BURST_SIZE, GFP_KERNEL);
+	if (unlikely(fifo_dev->transfer_buffer == NULL)) {
+		result = -ENOMEM;
+		goto error;
+	}
+#endif
 	/* Set user signal register */
 	if (!dyplo_fifo_write_usersignal(fifo_dev, DYPLO_USERSIGNAL_ZERO)) {
 		printk(KERN_ERR "%s: Failed to reset usersignals on w%d\n",
@@ -1156,6 +1180,7 @@ error:
 static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 {
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
+	struct dyplo_dev* dev = fifo_dev->config_parent->parent;
 	int status = 0;
 
 	pr_debug("%s index=%d\n", __func__, fifo_dev->index);
@@ -1193,7 +1218,14 @@ static int dyplo_fifo_write_release(struct inode *inode, struct file *filp)
 		pr_debug("%s: EOF sentinel not sent\n", __func__);
 error:
 #endif
+	if (down_interruptible(&dev->fop_sem))
+		return -ERESTARTSYS;
+#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
+	kfree(fifo_dev->transfer_buffer);
+	fifo_dev->transfer_buffer = NULL;
+#endif
 	fifo_dev->is_open = false;
+	up(&dev->fop_sem);
 	return status;
 }
 
@@ -1204,9 +1236,6 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 	struct dyplo_fifo_dev *fifo_dev = filp->private_data;
 	int __iomem *mapped_memory = dyplo_fifo_memory_location(fifo_dev);
 	size_t len = 0;
-#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
-	int kernel_buffer[DYPLO_FIFO_WRITE_MAX_BURST_SIZE/sizeof(int)];
-#endif
 
 	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
 
@@ -1266,11 +1295,11 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 				goto error;
 			}
 #else
-			if (unlikely(__copy_from_user(kernel_buffer, buf, bytes))) {
+			if (unlikely(__copy_from_user(fifo_dev->transfer_buffer, buf, bytes))) {
 				status = -EFAULT;
 				goto error;
 			}
-			iowrite32_rep(mapped_memory, kernel_buffer, words);
+			iowrite32_rep(mapped_memory, fifo_dev->transfer_buffer, words);
 #endif
 			fifo_dev->words_transfered += words;
 			len += bytes;

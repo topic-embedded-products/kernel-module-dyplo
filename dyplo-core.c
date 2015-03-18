@@ -25,7 +25,6 @@
  * You can contact Topic by electronic mail via info@topic.nl or via
  * paper mail at the following address: Postbus 440, 5680 AK Best, The Netherlands.
  */
-
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/device.h>
@@ -1430,6 +1429,83 @@ static unsigned int dyplo_dma_get_index(const struct dyplo_dma_dev *dma_dev)
 	return dyplo_get_config_index(dma_dev->config_parent);
 }
 
+static void dyplo_dma_to_logic_irq_enable(u32 __iomem *control_base)
+{
+	pr_debug("%s\n", __func__);
+	iowrite32_quick(BIT(0), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+}
+
+static void dyplo_dma_from_logic_irq_enable(u32 __iomem *control_base)
+{
+	pr_debug("%s\n", __func__);
+	iowrite32_quick(BIT(16), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+}
+
+/* Kills ongoing DMA transactions and resets everything. */
+static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
+{
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
+	u32 reg;
+	int result;
+	
+	pr_debug("%s\n", __func__);
+
+	/* Enable reset-ready-interrupt */
+	iowrite32_quick(BIT(15), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	/* Send reset command */
+	reg = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) | BIT(1);
+	iowrite32_quick(reg, control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	/* Wait for completion interrupt*/
+	result = wait_event_interruptible_timeout(dma_dev->wait_queue_to_logic,
+		(ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) & BIT(1)) == 0,
+		HZ);
+	/* Re-enable the node */
+	iowrite32_quick(BIT(0), control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	pr_debug("%s wr=%d\n", __func__, result);
+	if (unlikely(result <= 0)) {
+		if (result < 0)
+			return result;
+		pr_err("dyplo_dma_to_logic_reset timeout\n");
+		return -ETIMEDOUT;
+	}
+	dma_dev->dma_to_logic_head = 0;
+	dma_dev->dma_to_logic_tail = 0;
+	kfifo_reset(&dma_dev->dma_to_logic_wip);
+	return 0;
+}
+
+static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
+{
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
+	u32 reg;
+	int result;
+
+	pr_debug("%s\n", __func__);
+	/* Enable reset-ready-interrupt */
+	iowrite32_quick(BIT(31), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	/* Send reset command */
+	reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) | BIT(1);
+	iowrite32_quick(reg, control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	/* Wait for completion interrupt*/
+	result = wait_event_interruptible_timeout(dma_dev->wait_queue_to_logic,
+		(ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) & BIT(1)) == 0,
+		HZ);
+	/* Re-enable the node */
+	iowrite32_quick(BIT(0), control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	pr_debug("%s wr=%d\n", __func__, result);
+	if (unlikely(result <= 0)) {
+		if (result < 0)
+			return result;
+		pr_err("dyplo_dma_from_logic_reset timeout\n");
+		return -ETIMEDOUT;
+	}
+	dma_dev->dma_from_logic_head = 0;
+	dma_dev->dma_from_logic_tail = 0;
+	dma_dev->dma_from_logic_current_op.size = 0;
+	dma_dev->dma_from_logic_full = false;
+	return 0;
+}
+
 static int dyplo_dma_open(struct inode *inode, struct file *filp)
 {
 	struct dyplo_dma_dev *dma_dev = container_of(
@@ -1577,7 +1653,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 			if (signal_pending(current))
 				goto error_interrupted;
 			/* Enable interrupt */
-			iowrite32_quick(BIT(0), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+			dyplo_dma_to_logic_irq_enable(control_base);
 			if (is_blocking)
 				schedule();
 			else {
@@ -1614,7 +1690,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 			if (signal_pending(current))
 				goto error_interrupted;
 			/* Enable interrupt */
-			iowrite32_quick(BIT(0), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+			dyplo_dma_to_logic_irq_enable(control_base);
 			if (is_blocking)
 				schedule();
 			else {
@@ -1739,7 +1815,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 					if (signal_pending(current))
 						goto error_interrupted;
 					/* Enable interrupt */
-					iowrite32_quick(BIT(16), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+					dyplo_dma_from_logic_irq_enable(control_base);
 					if (is_blocking)
 						schedule();
 					else {
@@ -1807,7 +1883,7 @@ static unsigned int dyplo_dma_poll(struct file *filp, poll_table *wait)
 			mask |= (POLLOUT | POLLWRNORM);
 		else
 			/* enable interrupt request */
-			iowrite32_quick(BIT(0), dma_dev->config_parent->control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+			dyplo_dma_to_logic_irq_enable(dma_dev->config_parent->control_base);
 	}
 
 	if (filp->f_mode & FMODE_READ) {
@@ -1820,7 +1896,7 @@ static unsigned int dyplo_dma_poll(struct file *filp, poll_table *wait)
 				mask |= (POLLIN | POLLRDNORM);
 			else
 				/* enable interrupt request */
-				iowrite32_quick(BIT(16), dma_dev->config_parent->control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+				dyplo_dma_from_logic_irq_enable(dma_dev->config_parent->control_base);
 		}
 	}
 
@@ -1884,6 +1960,8 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 				if (dma_dev->dma_from_logic_memory_size % arg)
 					return -EINVAL; /* Must be divisable */
 				dma_dev->dma_from_logic_block_size = arg;
+				dma_dev->dma_from_logic_head = 0;
+				dma_dev->dma_from_logic_tail = 0;
 				return 0;
 			} else {
 				if (dma_dev->dma_to_logic_block_size == arg)
@@ -1894,14 +1972,16 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 				if (dma_dev->dma_to_logic_memory_size % arg)
 					return -EINVAL; /* Must be divisable */
 				dma_dev->dma_to_logic_block_size = arg;
+				dma_dev->dma_to_logic_head = 0;
+				dma_dev->dma_to_logic_tail = 0;
 				return 0;
 			}
 		case DYPLO_IOC_RESET_FIFO_WRITE:
-			iowrite32_quick(1, (dma_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_WRITE/4)));
-			return 0;
 		case DYPLO_IOC_RESET_FIFO_READ:
-			iowrite32_quick(1, (dma_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
-			return 0;
+			if (filp->f_mode & FMODE_WRITE)
+				return dyplo_dma_to_logic_reset(dma_dev);
+			else
+				return dyplo_dma_from_logic_reset(dma_dev);
 		case DYPLO_IOC_USERSIGNAL_QUERY:
 			if (filp->f_mode & FMODE_WRITE)
 				return ioread32_quick(dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
@@ -1943,9 +2023,19 @@ static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev 
 	/* Acknowledge IRQ */
 	iowrite32_quick(status,
 			cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_CLR>>2));
-	if (status & BIT(0))
+	/* Clear the reset command when done */
+	if (status & BIT(15))
+		iowrite32(
+			ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) & ~BIT(1),
+			cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	if (status & BIT(31))
+		iowrite32(
+			ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) & ~BIT(1),
+			cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	/* Wake up the proper queues */
+	if (status & (BIT(0) | BIT(15)))
 		wake_up_interruptible(&dma_dev->wait_queue_to_logic);
-	if (status & BIT(16))
+	if (status & (BIT(16) | BIT(31)))
 		wake_up_interruptible(&dma_dev->wait_queue_from_logic);
 	return IRQ_HANDLED;
 }

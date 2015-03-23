@@ -524,7 +524,7 @@ static long dyplo_ctl_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 	return dyplo_ctl_ioctl_impl(dev, cmd, arg);
 }
 
-static struct file_operations dyplo_ctl_fops =
+static const struct file_operations dyplo_ctl_fops =
 {
 	.owner = THIS_MODULE,
 	.read = dyplo_ctl_read,
@@ -736,7 +736,7 @@ static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 	return status;
 }
 
-static struct file_operations dyplo_cfg_fops =
+static const struct file_operations dyplo_cfg_fops =
 {
 	.owner = THIS_MODULE,
 	.read = dyplo_cfg_read,
@@ -1094,7 +1094,7 @@ static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 }
 
 
-static struct file_operations dyplo_fifo_read_fops =
+static const struct file_operations dyplo_fifo_read_fops =
 {
 	.owner = THIS_MODULE,
 	.read = dyplo_fifo_read_read,
@@ -1337,7 +1337,7 @@ static unsigned int dyplo_fifo_write_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
-static struct file_operations dyplo_fifo_write_fops =
+static const struct file_operations dyplo_fifo_write_fops =
 {
 	.write = dyplo_fifo_write_write,
 	.poll = dyplo_fifo_write_poll,
@@ -1506,6 +1506,10 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	return 0;
 }
 
+/* Forward declaration */
+static const struct file_operations dyplo_dma_to_logic_fops;
+static const struct file_operations dyplo_dma_from_logic_fops;
+
 static int dyplo_dma_open(struct inode *inode, struct file *filp)
 {
 	struct dyplo_dma_dev *dma_dev = container_of(
@@ -1530,11 +1534,14 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 	nonseekable_open(inode, filp);
 
 	if (rw_mode & FMODE_WRITE) {
+		filp->f_op = &dyplo_dma_to_logic_fops;
 		/* Reset usersignal */
 		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
 			cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 		/* Default to generic size */
 		dma_dev->dma_to_logic_block_size = dyplo_dma_default_block_size;
+	} else {
+		filp->f_op = &dyplo_dma_from_logic_fops;
 	}
 exit_open:
 	up(&dev->fop_sem);
@@ -1870,38 +1877,43 @@ error_interrupted:
 	return -ERESTARTSYS;
 }
 
-static unsigned int dyplo_dma_poll(struct file *filp, poll_table *wait)
+static unsigned int dyplo_dma_to_logic_poll(struct file *filp, poll_table *wait)
 {
 	struct dyplo_dma_dev *dma_dev = filp->private_data;
 	unsigned int mask = 0;
 	unsigned int avail;
 
-	if (filp->f_mode & FMODE_WRITE) {
-		poll_wait(filp, &dma_dev->wait_queue_to_logic, wait);
-		avail = dyplo_dma_to_logic_avail(dma_dev);
+	poll_wait(filp, &dma_dev->wait_queue_to_logic, wait);
+	avail = dyplo_dma_to_logic_avail(dma_dev);
+	if (avail)
+		mask |= (POLLOUT | POLLWRNORM);
+	else
+		/* enable interrupt request */
+		dyplo_dma_to_logic_irq_enable(dma_dev->config_parent->control_base);
+
+	pr_debug("%s(%x) -> %#x\n", __func__, filp->f_mode, mask);
+	return mask;
+}
+
+static unsigned int dyplo_dma_from_logic_poll(struct file *filp, poll_table *wait)
+{
+	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	unsigned int mask = 0;
+	unsigned int avail;
+
+	poll_wait(filp, &dma_dev->wait_queue_from_logic, wait);
+	if (dma_dev->dma_from_logic_current_op.size)
+		mask |= (POLLIN | POLLRDNORM);
+	else {
+		avail = dyplo_dma_from_logic_pump(dma_dev);
 		if (avail)
-			mask |= (POLLOUT | POLLWRNORM);
+			mask |= (POLLIN | POLLRDNORM);
 		else
 			/* enable interrupt request */
-			dyplo_dma_to_logic_irq_enable(dma_dev->config_parent->control_base);
-	}
-
-	if (filp->f_mode & FMODE_READ) {
-		poll_wait(filp, &dma_dev->wait_queue_from_logic, wait);
-		if (dma_dev->dma_from_logic_current_op.size)
-			mask |= (POLLIN | POLLRDNORM);
-		else {
-			avail = dyplo_dma_from_logic_pump(dma_dev);
-			if (avail)
-				mask |= (POLLIN | POLLRDNORM);
-			else
-				/* enable interrupt request */
-				dyplo_dma_from_logic_irq_enable(dma_dev->config_parent->control_base);
-		}
+			dyplo_dma_from_logic_irq_enable(dma_dev->config_parent->control_base);
 	}
 
 	pr_debug("%s(%x) -> %#x\n", __func__, filp->f_mode, mask);
-
 	return mask;
 }
 
@@ -1922,7 +1934,7 @@ static int dyplo_dma_get_route_id(struct dyplo_dma_dev *dma_dev)
 	return dyplo_dma_get_index(dma_dev);
 }
 
-static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct dyplo_dma_dev *dma_dev = filp->private_data;
 	if (unlikely(dma_dev == NULL))
@@ -1938,58 +1950,29 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 		case DYPLO_IOC_ROUTE_QUERY_ID:
 			return dyplo_dma_get_route_id(dma_dev);
 		case DYPLO_IOC_ROUTE_TELL_TO_LOGIC:
-			if ((filp->f_mode & FMODE_WRITE) == 0)
-				return -ENOTTY; /* Cannot route from this node */
 			return dyplo_dma_add_route(dma_dev, dyplo_dma_get_route_id(dma_dev), arg);
 		case DYPLO_IOC_ROUTE_TELL_FROM_LOGIC:
-			if ((filp->f_mode & FMODE_READ) == 0)
-				return -ENOTTY; /* Cannot route to this node */
-			return dyplo_dma_add_route(dma_dev, arg, dyplo_dma_get_route_id(dma_dev));
+			return -ENOTTY; /* Cannot route to this node */
 		case DYPLO_IOC_TRESHOLD_QUERY:
-			if ((filp->f_mode & FMODE_WRITE) != 0)
-				return dma_dev->dma_to_logic_memory_size;
-			else
-				return dma_dev->dma_from_logic_memory_size;
+			return dma_dev->dma_to_logic_memory_size;
 		case DYPLO_IOC_TRESHOLD_TELL:
-			if ((filp->f_mode & FMODE_WRITE) == 0) {
-				if (dma_dev->dma_from_logic_block_size == arg)
-					return 0;
-				if ((dma_dev->dma_from_logic_head != dma_dev->dma_from_logic_tail) ||
-						dma_dev->dma_from_logic_full)
-					return -EBUSY; /* Cannot change value */
-				if (dma_dev->dma_from_logic_memory_size % arg)
-					return -EINVAL; /* Must be divisable */
-				dma_dev->dma_from_logic_block_size = arg;
-				dma_dev->dma_from_logic_head = 0;
-				dma_dev->dma_from_logic_tail = 0;
+			if (dma_dev->dma_to_logic_block_size == arg)
 				return 0;
-			} else {
-				if (dma_dev->dma_to_logic_block_size == arg)
-					return 0;
-				if ((dma_dev->dma_to_logic_head != dma_dev->dma_to_logic_tail) ||
-						!kfifo_is_empty(&dma_dev->dma_to_logic_wip))
-					return -EBUSY;
-				if (dma_dev->dma_to_logic_memory_size % arg)
-					return -EINVAL; /* Must be divisable */
-				dma_dev->dma_to_logic_block_size = arg;
-				dma_dev->dma_to_logic_head = 0;
-				dma_dev->dma_to_logic_tail = 0;
-				return 0;
-			}
+			if ((dma_dev->dma_to_logic_head != dma_dev->dma_to_logic_tail) ||
+					!kfifo_is_empty(&dma_dev->dma_to_logic_wip))
+				return -EBUSY;
+			if (dma_dev->dma_to_logic_memory_size % arg)
+				return -EINVAL; /* Must be divisable */
+			dma_dev->dma_to_logic_block_size = arg;
+			dma_dev->dma_to_logic_head = 0;
+			dma_dev->dma_to_logic_tail = 0;
+			return 0;
 		case DYPLO_IOC_RESET_FIFO_WRITE:
 		case DYPLO_IOC_RESET_FIFO_READ:
-			if (filp->f_mode & FMODE_WRITE)
-				return dyplo_dma_to_logic_reset(dma_dev);
-			else
-				return dyplo_dma_from_logic_reset(dma_dev);
+			return dyplo_dma_to_logic_reset(dma_dev);
 		case DYPLO_IOC_USERSIGNAL_QUERY:
-			if (filp->f_mode & FMODE_WRITE)
-				return ioread32_quick(dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
-			else
-				return dma_dev->dma_from_logic_current_op.user_signal;
+			return ioread32_quick(dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 		case DYPLO_IOC_USERSIGNAL_TELL:
-			if (!(filp->f_mode & FMODE_WRITE))
-				return -EINVAL;
 			iowrite32_quick(arg, dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 			return 0;
 		default:
@@ -1997,19 +1980,84 @@ static long dyplo_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 	}
 }
 
+static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	if (unlikely(dma_dev == NULL))
+		return -ENODEV;
 
-static struct file_operations dyplo_dma_fops =
+	pr_debug("%s cmd=%#x (%d) arg=%#lx\n", __func__, cmd, _IOC_NR(cmd), arg);
+
+	if (_IOC_TYPE(cmd) != DYPLO_IOC_MAGIC)
+		return -ENOTTY;
+
+	switch (_IOC_NR(cmd))
+	{
+		case DYPLO_IOC_ROUTE_QUERY_ID:
+			return dyplo_dma_get_route_id(dma_dev);
+		case DYPLO_IOC_ROUTE_TELL_TO_LOGIC:
+			return -ENOTTY; /* Cannot route from this node */
+		case DYPLO_IOC_ROUTE_TELL_FROM_LOGIC:
+			return dyplo_dma_add_route(dma_dev, arg, dyplo_dma_get_route_id(dma_dev));
+		case DYPLO_IOC_TRESHOLD_QUERY:
+			return dma_dev->dma_from_logic_memory_size;
+		case DYPLO_IOC_TRESHOLD_TELL:
+			if (dma_dev->dma_from_logic_block_size == arg)
+				return 0;
+			if ((dma_dev->dma_from_logic_head != dma_dev->dma_from_logic_tail) ||
+					dma_dev->dma_from_logic_full)
+				return -EBUSY; /* Cannot change value */
+			if (dma_dev->dma_from_logic_memory_size % arg)
+				return -EINVAL; /* Must be divisable */
+			dma_dev->dma_from_logic_block_size = arg;
+			dma_dev->dma_from_logic_head = 0;
+			dma_dev->dma_from_logic_tail = 0;
+			return 0;
+		case DYPLO_IOC_RESET_FIFO_WRITE:
+		case DYPLO_IOC_RESET_FIFO_READ:
+			return dyplo_dma_from_logic_reset(dma_dev);
+		case DYPLO_IOC_USERSIGNAL_QUERY:
+			return dma_dev->dma_from_logic_current_op.user_signal;
+		case DYPLO_IOC_USERSIGNAL_TELL:
+			return -EACCES;
+		default:
+			return -ENOTTY;
+	}
+}
+
+static const struct file_operations dyplo_dma_to_logic_fops =
 {
 	.owner = THIS_MODULE,
-	.read = dyplo_dma_read,
 	.write = dyplo_dma_write,
 	.llseek = no_llseek,
-	.poll = dyplo_dma_poll,
-/*	.mmap = dyplo_dma_mmap, */
-	.unlocked_ioctl = dyplo_dma_ioctl,
+	.poll = dyplo_dma_to_logic_poll,
+/*	.mmap = dyplo_dma_to_logic_mmap, */
+	.unlocked_ioctl = dyplo_dma_to_logic_ioctl,
 	.open = dyplo_dma_open,
 	.release = dyplo_dma_release,
 };
+
+static const struct file_operations dyplo_dma_from_logic_fops =
+{
+	.owner = THIS_MODULE,
+	.read = dyplo_dma_read,
+	.llseek = no_llseek,
+	.poll = dyplo_dma_from_logic_poll,
+/*	.mmap = dyplo_dma_from_logic_mmap, */
+	.unlocked_ioctl = dyplo_dma_from_logic_ioctl,
+	.open = dyplo_dma_open,
+	.release = dyplo_dma_release,
+};
+
+/* Common file operations struct. "open" will set one of the above into
+ * the inode. */
+static const struct file_operations dyplo_dma_fops =
+{
+	.owner = THIS_MODULE,
+	.open = dyplo_dma_open,
+	.release = dyplo_dma_release,
+};
+
 
 /* Interrupt service routine for DMA node */
 static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)

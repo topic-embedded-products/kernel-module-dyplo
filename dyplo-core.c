@@ -65,6 +65,11 @@ static const char DRIVER_FIFO_READ_NAME[] = "dyplor%d";
 static const char DRIVER_DMA_CLASS_NAME[] = "dyplo-dma";
 static const char DRIVER_DMA_DEVICE_NAME[] = "dyplod%d";
 
+/* Maximum number of commands, i.e. the size of the command queue in
+ * logic. This is mostly dynamically used, but in some places, it's
+ * good to know how far we can go. */
+#define DMA_MAX_NUMBER_OF_COMMANDS	8
+
 static const unsigned int dyplo_dma_default_block_size = 64 * 1024;
 static const size_t dyplo_dma_memory_size = 256 * 1024;
 
@@ -112,12 +117,33 @@ struct dyplo_dma_from_logic_operation {
 	u16 short_transfer; /* Non-zero if size < blocksize */
 };
 
+struct dyplo_dma_dev;
+
+struct dyplo_dma_block {
+	/* Kernel part */
+	struct dyplo_dma_dev* parent;
+	dma_addr_t phys_addr;
+	void* mem_addr;
+	/* User part */
+	struct dyplo_buffer_block data;
+};
+
+struct dyplo_dma_block_set {
+	struct dyplo_dma_block *blocks;
+	u32 size;
+	u32 count;
+};
+
 struct dyplo_dma_dev
 {
 	struct dyplo_config_dev* config_parent;
 	struct cdev cdev_dma;
 	mode_t open_mode; /* Only FMODE_READ and FMODE_WRITE */
-	/* big blocks of memory for transfers */
+
+	struct dyplo_dma_block_set dma_to_logic_blocks;
+	struct dyplo_dma_block_set dma_from_logic_blocks;
+
+	/* big blocks of memory for read/write transfers */
 	dma_addr_t dma_to_logic_handle;
 	void* dma_to_logic_memory;
 	unsigned int dma_to_logic_memory_size;
@@ -126,7 +152,7 @@ struct dyplo_dma_dev
 	unsigned int dma_to_logic_block_size;
 	DECLARE_KFIFO(dma_to_logic_wip, struct dyplo_dma_to_logic_operation, 16);
 	wait_queue_head_t wait_queue_to_logic;
-	
+
 	dma_addr_t dma_from_logic_handle;
 	void* dma_from_logic_memory;
 	unsigned int dma_from_logic_memory_size;
@@ -1138,7 +1164,7 @@ static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 	int index = inode->i_rdev - fifo_ctl_dev->devt_first_fifo_device;
 	struct dyplo_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[index];
 	struct dyplo_dev* dev = fifo_ctl_dev->config_parent->parent;
-	
+
 	pr_debug("%s index=%d mode=%#x flags=%#x i-devt=%u d=%u f=%u\n", __func__,
 		index, filp->f_mode, filp->f_flags,
 		inode->i_rdev, inode->i_cdev->dev, fifo_ctl_dev->devt_first_fifo_device);
@@ -1448,27 +1474,41 @@ static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 reg;
 	int result;
-	
+	DEFINE_WAIT(wait);
+
 	pr_debug("%s\n", __func__);
 
+	reg = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	if (reg & BIT(1)) {
+		pr_err("%s: Reset already in progress\n", __func__);
+		return -EBUSY;
+	}
+	reg |= BIT(1);
+	prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
 	/* Enable reset-ready-interrupt */
-	iowrite32_quick(BIT(15), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32(BIT(15), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
 	/* Send reset command */
-	reg = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) | BIT(1);
 	iowrite32_quick(reg, control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
-	/* Wait for completion interrupt*/
-	result = wait_event_interruptible_timeout(dma_dev->wait_queue_to_logic,
-		(ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) & BIT(1)) == 0,
-		HZ);
+	for(;;) {
+		if ((ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) & BIT(1)) == 0) {
+			result = 0;
+			break;
+		}
+		if (signal_pending(current)) {
+			result = -ERESTARTSYS;
+			break;
+		}
+		if (schedule_timeout(HZ/4) == 0) {
+			pr_err("%s: TIMEOUT waiting for reset complete IRQ.\n", __func__);
+			result = -ETIMEDOUT;
+			break;
+		}
+		prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
+	}
+	finish_wait(&dma_dev->wait_queue_from_logic, &wait);
+
 	/* Re-enable the node */
 	iowrite32_quick(BIT(0), control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
-	pr_debug("%s wr=%d\n", __func__, result);
-	if (unlikely(result <= 0)) {
-		if (result < 0)
-			return result;
-		pr_err("dyplo_dma_to_logic_reset timeout\n");
-		return -ETIMEDOUT;
-	}
 	dma_dev->dma_to_logic_head = 0;
 	dma_dev->dma_to_logic_tail = 0;
 	kfifo_reset(&dma_dev->dma_to_logic_wip);
@@ -1480,31 +1520,50 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 reg;
 	int result;
+	DEFINE_WAIT(wait);
 
 	pr_debug("%s\n", __func__);
+
+	reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	if (reg & BIT(1)) {
+		pr_err("%s: Reset already in progress\n", __func__);
+		return -EBUSY;
+	}
+	reg |= BIT(1);
+	prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
 	/* Enable reset-ready-interrupt */
-	iowrite32_quick(BIT(31), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
+	iowrite32(BIT(31), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
 	/* Send reset command */
-	reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) | BIT(1);
-	iowrite32_quick(reg, control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
-	/* Wait for completion interrupt*/
-	result = wait_event_interruptible_timeout(dma_dev->wait_queue_to_logic,
-		(ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) & BIT(1)) == 0,
-		HZ);
+	iowrite32_quick(BIT(1)|BIT(0), control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	for(;;) {
+		if ((ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) & BIT(1)) == 0) {
+			result = 0;
+			break;
+		}
+		if (signal_pending(current)) {
+			result = -ERESTARTSYS;
+			break;
+		}
+		if (schedule_timeout(HZ) == 0) {
+			pr_err("%s: TIMEOUT waiting for reset complete IRQ ctrl=%#x ists=%#x\n",
+				__func__,
+				ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)),
+				ioread32_quick(control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2)));
+			result = -ETIMEDOUT;
+			break;
+		}
+		prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
+	}
+	finish_wait(&dma_dev->wait_queue_from_logic, &wait);
+
 	/* Re-enable the node */
 	iowrite32_quick(BIT(0), control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
-	pr_debug("%s wr=%d\n", __func__, result);
-	if (unlikely(result <= 0)) {
-		if (result < 0)
-			return result;
-		pr_err("dyplo_dma_from_logic_reset timeout\n");
-		return -ETIMEDOUT;
-	}
+
 	dma_dev->dma_from_logic_head = 0;
 	dma_dev->dma_from_logic_tail = 0;
 	dma_dev->dma_from_logic_current_op.size = 0;
 	dma_dev->dma_from_logic_full = false;
-	return 0;
+	return result;
 }
 
 /* Forward declaration */
@@ -1518,23 +1577,27 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 	struct dyplo_config_dev *cfg_dev = dma_dev->config_parent;
 	struct dyplo_dev *dev = cfg_dev->parent;
 	int status = 0;
-	mode_t rw_mode = filp->f_mode & (FMODE_READ | FMODE_WRITE);
 
 	pr_debug("%s(mode=%#x flags=%#x)\n", __func__,
 		filp->f_mode, filp->f_flags);
 
+	/* Must specify either read or write mode */
+	if ((filp->f_mode & (FMODE_READ | FMODE_WRITE)) == 0)
+		return -EINVAL;
+
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
-	/* Allow only one open, or one R and one W */
-	if (rw_mode & dma_dev->open_mode) {
-		status = -EBUSY;
-		goto exit_open;
-	}
-	dma_dev->open_mode |= rw_mode; /* Set in-use bits */
 	filp->private_data = dma_dev; /* for other methods */
 	nonseekable_open(inode, filp);
 
-	if (rw_mode & FMODE_WRITE) {
+	if (filp->f_mode & FMODE_WRITE) {
+		/* For mmap to work, the device must be opened in R+W mode, so
+		 * consider this the same as opening for write-only. */
+		if (dma_dev->open_mode & FMODE_WRITE) {
+			status = -EBUSY;
+			goto exit_open;
+		}
+		dma_dev->open_mode |= FMODE_WRITE; /* Set in-use bits */
 		filp->f_op = &dyplo_dma_to_logic_fops;
 		/* Reset usersignal */
 		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
@@ -1542,6 +1605,11 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 		/* Default to generic size */
 		dma_dev->dma_to_logic_block_size = dyplo_dma_default_block_size;
 	} else {
+		if (dma_dev->open_mode & FMODE_READ) {
+			status = -EBUSY;
+			goto exit_open;
+		}
+		dma_dev->open_mode |= FMODE_READ; /* Set in-use bits */
 		filp->f_op = &dyplo_dma_from_logic_fops;
 	}
 exit_open:
@@ -1648,6 +1716,9 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 		return -EINVAL;
 	count &= ~0x03;
 
+	if (dma_dev->dma_to_logic_blocks.blocks)
+		return -EBUSY;
+
 	while (count) {
 		bytes_to_copy = min((unsigned int)count, dma_dev->dma_to_logic_block_size);
 		for(;;) {
@@ -1722,7 +1793,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 				(u32)dma_op.addr, dma_op.size);
 			BUG();
 		}
-		
+
 		/* Update pointers for next chunk, if any */
 		dma_dev->dma_to_logic_head += bytes_to_copy;
 		if (dma_dev->dma_to_logic_head == dma_dev->dma_to_logic_memory_size)
@@ -1741,7 +1812,8 @@ error_exit:
 	return status;
 
 error_interrupted:
-	finish_wait(&dma_dev->wait_queue_to_logic, &wait);
+	if (is_blocking)
+		finish_wait(&dma_dev->wait_queue_to_logic, &wait);
 	pr_debug("%s -> ERESTARTSYS\n", __func__);
 	return -ERESTARTSYS;
 }
@@ -1752,11 +1824,11 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 status_reg;
 	u8 num_free_entries;
-	
+
 	status_reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
 	pr_debug("%s status=%#x\n", __func__, status_reg);
 	num_free_entries = (status_reg >> 16) & 0xFF;
-	
+
 	while (!dma_dev->dma_from_logic_full) {
 		if (!num_free_entries)
 			break; /* No more room for commands */
@@ -1771,7 +1843,7 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 			dma_dev->dma_from_logic_full = true;
 		--num_free_entries;
 	}
-	
+
 	return status_reg >> 24;
 }
 
@@ -1790,11 +1862,14 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 	const bool is_blocking = (filp->f_flags & O_NONBLOCK) == 0;
 
 	pr_debug("%s(%u)\n", __func__, (unsigned int)count);
-	
+
 	if (count < 4) /* Do not allow read or write below word size */
 		return -EINVAL;
 	count &= ~0x03;
-	
+
+	if (dma_dev->dma_from_logic_blocks.blocks)
+		return -EBUSY;
+
 	while (count) {
 		while (current_op->size == 0) {
 			/* Fetch a new operation from logic */
@@ -1877,47 +1952,64 @@ exit_ok:
 error_exit:
 	return status;
 error_interrupted:
-	finish_wait(&dma_dev->wait_queue_from_logic, &wait);
+	if (is_blocking)
+		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 	return -ERESTARTSYS;
 }
 
 static unsigned int dyplo_dma_to_logic_poll(struct file *filp, poll_table *wait)
 {
 	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	unsigned int mask = 0;
 	unsigned int avail;
 
 	poll_wait(filp, &dma_dev->wait_queue_to_logic, wait);
-	avail = dyplo_dma_to_logic_avail(dma_dev);
+
+	if (dma_dev->dma_to_logic_blocks.blocks) {
+		/* Writable when not all blocks have been submitted, or when
+		 * results are available and can be dequeued */
+		avail = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+		if ((avail & 0xFF000000) == 0) {
+			/* No results yet, see if there are blocks available */
+			avail = ((avail >> 16) & 0xFF) + dma_dev->dma_to_logic_blocks.count - DMA_MAX_NUMBER_OF_COMMANDS;
+		}
+	} else
+		avail = dyplo_dma_to_logic_avail(dma_dev);
 	if (avail)
 		mask |= (POLLOUT | POLLWRNORM);
 	else
-		/* enable interrupt request */
-		dyplo_dma_to_logic_irq_enable(dma_dev->config_parent->control_base);
+		dyplo_dma_to_logic_irq_enable(control_base);
 
-	pr_debug("%s(%x) -> %#x\n", __func__, filp->f_mode, mask);
+	pr_debug("%s(%#x) -> %#x\n", __func__, avail, mask);
 	return mask;
 }
 
 static unsigned int dyplo_dma_from_logic_poll(struct file *filp, poll_table *wait)
 {
 	struct dyplo_dma_dev *dma_dev = filp->private_data;
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	unsigned int mask = 0;
 	unsigned int avail;
 
 	poll_wait(filp, &dma_dev->wait_queue_from_logic, wait);
-	if (dma_dev->dma_from_logic_current_op.size)
-		mask |= (POLLIN | POLLRDNORM);
-	else {
-		avail = dyplo_dma_from_logic_pump(dma_dev);
-		if (avail)
-			mask |= (POLLIN | POLLRDNORM);
-		else
-			/* enable interrupt request */
-			dyplo_dma_from_logic_irq_enable(dma_dev->config_parent->control_base);
-	}
 
-	pr_debug("%s(%x) -> %#x\n", __func__, filp->f_mode, mask);
+	if (dma_dev->dma_from_logic_blocks.blocks) {
+		avail = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+		pr_debug("%s(status=%#x)\n", __func__, avail);
+		avail &= 0xFF000000;
+	} else {
+		if (dma_dev->dma_from_logic_current_op.size)
+			avail = 1;
+		else
+			avail = dyplo_dma_from_logic_pump(dma_dev);
+	}
+	if (avail)
+		mask |= (POLLIN | POLLRDNORM);
+	else
+		dyplo_dma_from_logic_irq_enable(control_base);
+
+	pr_debug("%s(%x) -> %#x\n", __func__, avail, mask);
 	return mask;
 }
 
@@ -1936,6 +2028,253 @@ static int dyplo_dma_get_route_id(struct dyplo_dma_dev *dma_dev)
 {
 	/* Only one fifo, so upper 8 bits are always 0 */
 	return dyplo_dma_get_index(dma_dev);
+}
+
+static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_dma_block_set* dma_block_set)
+{
+	struct dyplo_dev *dev = dma_dev->config_parent->parent;
+	u32 i;
+
+	for (i = 0; i < dma_block_set->count; ++i) {
+		struct dyplo_dma_block *block = &dma_block_set->blocks[i];
+		if (block->mem_addr) {
+			dma_free_coherent(dev->device, block->data.size,
+				block->mem_addr, block->phys_addr);
+		}
+	}
+	kfree(dma_block_set->blocks);
+	dma_block_set->blocks = NULL;
+	dma_block_set->count = 0;
+	dma_block_set->size = 0;
+
+	return 0;
+}
+
+static int dyplo_dma_to_logic_block_free(struct dyplo_dma_dev *dma_dev)
+{
+	/* Reset the device to release all resources */
+	dyplo_dma_to_logic_reset(dma_dev);
+	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_to_logic_blocks);
+}
+
+
+static int dyplo_dma_common_block_alloc_one(
+	struct dyplo_dma_dev *dma_dev,
+	struct dyplo_dma_block *block)
+{
+	struct dyplo_dev *dev = dma_dev->config_parent->parent;
+
+	block->mem_addr = dma_alloc_coherent(dev->device,
+		block->data.size, &block->phys_addr, GFP_KERNEL);
+	if (!block->mem_addr)
+		return -ENOMEM;
+	return 0;
+}
+
+static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block_alloc_req *request,
+	struct dyplo_dma_block_set* dma_block_set)
+{
+	struct dyplo_dma_block *block;
+	u32 i;
+	int ret;
+
+	if (!request->size || !request->count)
+		return -EINVAL;
+	request->size = PAGE_ALIGN(request->size);
+	/* Pointless to use more */
+	if (request->count > DMA_MAX_NUMBER_OF_COMMANDS)
+		request->count = DMA_MAX_NUMBER_OF_COMMANDS;
+	block = kcalloc(request->count, sizeof(*block), GFP_KERNEL);
+	if (!block)
+		return -ENOMEM;
+	dma_block_set->blocks = block;
+	dma_block_set->size = request->size;
+	dma_block_set->count = request->count;
+	for (i = 0; i < request->count; ++i) {
+		block->data.id = i;
+		block->data.size = request->size;
+		block->data.offset = i * request->size;
+		ret = dyplo_dma_common_block_alloc_one(dma_dev, block);
+		if (unlikely(ret)) {
+			dyplo_dma_common_block_free(dma_dev, dma_block_set);
+			return ret;
+		}
+		++block;
+	}
+	return 0;
+}
+
+
+static int dyplo_dma_to_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block_alloc_req __user *arg)
+{
+	struct dyplo_buffer_block_alloc_req request;
+	int ret;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+
+	pr_debug("%s count=%u size=%u\n", __func__, request.count, request.size);
+
+	dyplo_dma_to_logic_block_free(dma_dev);
+	ret = dyplo_dma_common_block_alloc(dma_dev, &request, &dma_dev->dma_to_logic_blocks);
+	if (!ret)
+		return ret;
+
+	if (copy_to_user(arg, &request, sizeof(request)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_to_logic_block_query(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block __user *arg)
+{
+	__u32 request_id;
+
+	if (get_user(request_id, &arg->id))
+		return -EFAULT;
+
+	if (request_id >= dma_dev->dma_to_logic_blocks.count)
+		return -EINVAL;
+
+	if (copy_to_user(arg, &dma_dev->dma_to_logic_blocks.blocks[request_id].data, sizeof(struct dyplo_buffer_block)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block __user *arg)
+{
+	struct dyplo_buffer_block request;
+	struct dyplo_dma_block *block;
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+
+	if (request.id >= dma_dev->dma_to_logic_blocks.count)
+		return -EINVAL;
+
+	block = &dma_dev->dma_to_logic_blocks.blocks[request.id];
+	if (block->data.state)
+		return -EINVAL;
+
+	block->data.bytes_used = request.bytes_used;
+	block->data.user_signal = request.user_signal;
+	/* This operation never blocks, unless something is wrong in HW */
+	if (!(ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2)) & 0xFF0000))
+		return -EWOULDBLOCK;
+	pr_debug("%s sending addr=%#x size=%u\n", __func__,
+			(unsigned int)block->phys_addr, block->data.bytes_used);
+	iowrite32_quick(block->phys_addr, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR>>2));
+	iowrite32_quick(block->data.user_signal, control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
+	iowrite32(block->data.bytes_used, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
+	block->data.state = 1;
+
+	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block __user *arg, bool is_blocking)
+{
+	struct dyplo_buffer_block request;
+	struct dyplo_dma_block *block;
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
+	u32 status;
+	dma_addr_t start_addr;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+
+	if (request.id >= dma_dev->dma_to_logic_blocks.count)
+		return -EINVAL;
+
+	block = &dma_dev->dma_to_logic_blocks.blocks[request.id];
+	if (!block->data.state)
+		return -EINVAL;
+
+	if (is_blocking) {
+		DEFINE_WAIT(wait);
+		for (;;) {
+			prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
+			status = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+			if (status & 0xFF000000)
+				break; /* Results available, done waiting */
+			if (signal_pending(current)) {
+				finish_wait(&dma_dev->wait_queue_from_logic, &wait);
+				return -ERESTARTSYS;
+			}
+			/* Enable interrupt */
+			dyplo_dma_to_logic_irq_enable(control_base);
+			schedule();
+		}
+		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
+	} else {
+		status = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+		if ((status & 0xFF000000) == 0)
+			return -EAGAIN;
+	}
+	start_addr = ioread32(control_base + (DYPLO_DMA_TOLOGIC_RESULT_ADDR>>2));
+	if (start_addr != block->phys_addr) {
+		pr_err("%s Expected addr %#x result %#x\n", __func__, (u32)block->phys_addr, (u32)start_addr);
+		return -EIO;
+	}
+
+	block->data.state = 0;
+
+	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
+	struct vm_area_struct *vma,
+	struct dyplo_dma_block_set* dma_block_set)
+{
+	const unsigned int count = dma_block_set->count;
+	struct dyplo_dma_block *block = NULL;
+	unsigned int vm_offset = vma->vm_pgoff << PAGE_SHIFT;
+	unsigned int i;
+
+	pr_debug("%s offset=%u\n", __func__, vm_offset);
+
+	for (i = 0; i < count; ++i) {
+		if (dma_block_set->blocks[i].data.offset == vm_offset) {
+			block = &dma_block_set->blocks[i];
+			break;
+		}
+	}
+
+	if (block == NULL) {
+		pr_err("%s offset %u not found\n", __func__, vm_offset);
+		return -EINVAL;
+	}
+
+	if (PAGE_ALIGN(block->data.size) < vma->vm_end - vma->vm_start) {
+		pr_err("%s size mismatch\n", __func__);
+		return -EINVAL;
+	}
+
+	vma->vm_pgoff = 0;
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+	return dma_mmap_coherent(dma_dev->config_parent->parent->device,
+		vma, block->mem_addr, block->phys_addr,	block->data.size);
+}
+
+static int dyplo_dma_to_logic_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	struct dyplo_dma_dev *dma_dev = filp->private_data;
+
+	return dyplo_dma_common_mmap(dma_dev, vma,
+		&dma_dev->dma_to_logic_blocks);
 }
 
 static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -1979,10 +2318,177 @@ static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsign
 		case DYPLO_IOC_USERSIGNAL_TELL:
 			iowrite32_quick(arg, dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 			return 0;
+		case DYPLO_IOC_DMABLOCK_ALLOC:
+			return dyplo_dma_to_logic_block_alloc(dma_dev,
+				(struct dyplo_buffer_block_alloc_req __user *)arg);
+		case DYPLO_IOC_DMABLOCK_FREE:
+			return dyplo_dma_to_logic_block_free(dma_dev);
+		case DYPLO_IOC_DMABLOCK_QUERY:
+			return dyplo_dma_to_logic_block_query(dma_dev,
+				(struct dyplo_buffer_block __user *)arg);
+		case DYPLO_IOC_DMABLOCK_ENQUEUE:
+			return dyplo_dma_to_logic_block_enqueue(dma_dev,
+				(struct dyplo_buffer_block __user *)arg);
+		case DYPLO_IOC_DMABLOCK_DEQUEUE:
+			return dyplo_dma_to_logic_block_dequeue(dma_dev,
+				(struct dyplo_buffer_block __user *)arg,
+				(filp->f_flags & O_NONBLOCK) == 0);
 		default:
 			return -ENOTTY;
 	}
 }
+
+static int dyplo_dma_from_logic_block_free(struct dyplo_dma_dev *dma_dev)
+{
+	/* Reset the device to release all resources */
+	dyplo_dma_from_logic_reset(dma_dev);
+	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_from_logic_blocks);
+}
+
+static int dyplo_dma_from_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block_alloc_req __user *arg)
+{
+	struct dyplo_buffer_block_alloc_req request;
+	int ret;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+
+	pr_debug("%s count=%u size=%u\n", __func__, request.count, request.size);
+
+	dyplo_dma_from_logic_block_free(dma_dev);
+	ret = dyplo_dma_common_block_alloc(dma_dev, &request, &dma_dev->dma_from_logic_blocks);
+	if (!ret)
+		return ret;
+
+	if (copy_to_user(arg, &request, sizeof(request)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_from_logic_block_query(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block __user *arg)
+{
+	__u32 request_id;
+
+	if (get_user(request_id, &arg->id))
+		return -EFAULT;
+
+	if (request_id >= dma_dev->dma_from_logic_blocks.count)
+		return -EINVAL;
+
+	if (copy_to_user(arg, &dma_dev->dma_from_logic_blocks.blocks[request_id].data, sizeof(struct dyplo_buffer_block)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block __user *arg)
+{
+	__u32 request_id;
+	struct dyplo_dma_block *block;
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
+	u32 status_reg;
+	u8 num_free_entries;
+
+	if (get_user(request_id, &arg->id))
+		return -EFAULT;
+
+	if (request_id >= dma_dev->dma_from_logic_blocks.count)
+		return -EINVAL;
+
+	block = &dma_dev->dma_from_logic_blocks.blocks[request_id];
+	if (block->data.state)
+		return -EINVAL;
+
+	/* TODO: Blocking wait for room instead */
+	status_reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+	pr_debug("%s status=%#x\n", __func__, status_reg);
+	num_free_entries = (status_reg >> 16) & 0xFF;
+	if (!num_free_entries)
+		return -EWOULDBLOCK;
+	/* Send to logic */
+	pr_debug("%s sending addr=%#x size=%u\n", __func__,
+			(u32)block->phys_addr, block->data.size);
+	iowrite32(block->phys_addr, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR>>2));
+	iowrite32(block->data.size, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
+	--num_free_entries;
+	block->data.bytes_used = 0;
+	block->data.state = 1;
+
+	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_buffer_block __user *arg, bool is_blocking)
+{
+	struct dyplo_buffer_block request;
+	struct dyplo_dma_block *block;
+	u32 __iomem *control_base = dma_dev->config_parent->control_base;
+	u32 status_reg;
+	dma_addr_t start_addr;
+	DEFINE_WAIT(wait);
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+
+	if (request.id >= dma_dev->dma_from_logic_blocks.count)
+		return -EINVAL;
+
+	block = &dma_dev->dma_from_logic_blocks.blocks[request.id];
+	if (!block->data.state)
+		return -EINVAL;
+
+	for(;;) {
+		if (is_blocking)
+			prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
+		status_reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+		pr_debug("%s status=%#x\n", __func__, status_reg);
+		/* TODO: Blocking */
+		if (status_reg & 0xFF000000)
+			break; /* Result(s) available, we're done */
+		if (signal_pending(current)) {
+			if (is_blocking)
+				finish_wait(&dma_dev->wait_queue_from_logic, &wait);
+			return -ERESTARTSYS;
+		}
+		/* Enable interrupt */
+		dyplo_dma_from_logic_irq_enable(control_base);
+		if (!is_blocking)
+			return -EAGAIN;
+		schedule();
+	}
+	if (is_blocking)
+		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
+
+	start_addr = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_ADDR>>2));
+	if (start_addr != block->phys_addr) {
+		pr_err("%s Expected addr %#x result %#x\n", __func__, (u32)block->phys_addr, (u32)start_addr);
+		return -EIO;
+	}
+	block->data.user_signal = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_USERBITS>>2));
+	block->data.bytes_used = ioread32(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE>>2));
+	block->data.state = 0;
+
+	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
+		return -EFAULT;
+
+	return 0;
+}
+
+static int dyplo_dma_from_logic_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	struct dyplo_dma_dev *dma_dev = filp->private_data;
+
+	return dyplo_dma_common_mmap(dma_dev, vma,
+		&dma_dev->dma_from_logic_blocks);
+}
+
 
 static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -2024,6 +2530,21 @@ static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsi
 			return dma_dev->dma_from_logic_current_op.user_signal;
 		case DYPLO_IOC_USERSIGNAL_TELL:
 			return -EACCES;
+		case DYPLO_IOC_DMABLOCK_ALLOC:
+			return dyplo_dma_from_logic_block_alloc(dma_dev,
+				(struct dyplo_buffer_block_alloc_req __user *)arg);
+		case DYPLO_IOC_DMABLOCK_FREE:
+			return dyplo_dma_from_logic_block_free(dma_dev);
+		case DYPLO_IOC_DMABLOCK_QUERY:
+			return dyplo_dma_from_logic_block_query(dma_dev,
+				(struct dyplo_buffer_block __user *)arg);
+		case DYPLO_IOC_DMABLOCK_ENQUEUE:
+			return dyplo_dma_from_logic_block_enqueue(dma_dev,
+				(struct dyplo_buffer_block __user *)arg);
+		case DYPLO_IOC_DMABLOCK_DEQUEUE:
+			return dyplo_dma_from_logic_block_dequeue(dma_dev,
+				(struct dyplo_buffer_block __user *)arg,
+				(filp->f_flags & O_NONBLOCK) == 0);
 		default:
 			return -ENOTTY;
 	}
@@ -2035,7 +2556,7 @@ static const struct file_operations dyplo_dma_to_logic_fops =
 	.write = dyplo_dma_write,
 	.llseek = no_llseek,
 	.poll = dyplo_dma_to_logic_poll,
-/*	.mmap = dyplo_dma_to_logic_mmap, */
+	.mmap = dyplo_dma_to_logic_mmap,
 	.unlocked_ioctl = dyplo_dma_to_logic_ioctl,
 	.open = dyplo_dma_open,
 	.release = dyplo_dma_release,
@@ -2047,7 +2568,7 @@ static const struct file_operations dyplo_dma_from_logic_fops =
 	.read = dyplo_dma_read,
 	.llseek = no_llseek,
 	.poll = dyplo_dma_from_logic_poll,
-/*	.mmap = dyplo_dma_from_logic_mmap, */
+	.mmap = dyplo_dma_from_logic_mmap,
 	.unlocked_ioctl = dyplo_dma_from_logic_ioctl,
 	.open = dyplo_dma_open,
 	.release = dyplo_dma_release,
@@ -2127,7 +2648,7 @@ static int create_sub_devices_cpu_fifo(
 	int number_of_read_fifos;
 	int i;
 	struct device *char_device;
-	
+
 	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) > 0x0200) {
 		dev_err(device, "Unsupported CPU FIFO node revision: %#x\n",
 			sub_device_id);
@@ -2306,7 +2827,7 @@ static int create_sub_devices_dma_fifo(
 		retval = PTR_ERR(char_device);
 		goto failed_device_create;
 	}
-	
+
 	++dev->number_of_dma_devices;
 	/* Enable the DMA controller */
 	iowrite32_quick(BIT(0), cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
@@ -2336,9 +2857,13 @@ static void destroy_sub_devices_dma_fifo(
 {
 	struct dyplo_dma_dev* dma_dev = cfg_dev->private_data;
 	struct device *device = cfg_dev->parent->device;
-	/* Stop the DMA cores to make sure the memory is no longer being used */
+	/* Free any transfers */
+	dyplo_dma_to_logic_block_free(dma_dev);
+	dyplo_dma_from_logic_block_free(dma_dev);
+	/* Stop the DMA cores */
 	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
 	iowrite32_quick(0, cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	/* Release internal buffers */
 	dma_free_coherent(device, dma_dev->dma_from_logic_memory_size,
 		dma_dev->dma_from_logic_memory, dma_dev->dma_from_logic_handle);
 	dma_free_coherent(device, dma_dev->dma_to_logic_memory_size,
@@ -2447,7 +2972,7 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 	/* __iomem int *control_base = cfg_dev->control_base; */
 	struct dyplo_dma_dev *dma_dev = cfg_dev->private_data;
 	u32 status;
-	
+
 	if (!dma_dev) {
 		seq_printf(m, "  DMA node not registered\n");
 		return;
@@ -2544,7 +3069,7 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 		dev->base[DYPLO_REG_AXI_COUNTER_BASE/4],
 		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+0],
 		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+1]);
-	
+
 	if (!dev->base[DYPLO_REG_CONTROL_LICENSE_VALID/4])
 		seq_printf(m, "WARNING: License expired!\n");
 	return 0;
@@ -2587,7 +3112,7 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 	dyplo_version = ioread32_quick(dev->base + (DYPLO_REG_CONTROL_DYPLO_VERSION>>2));
 	dev_info(device, "Dyplo version %d.%d.%d\n",
 		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF, dyplo_version & 0xFF);
-	if (dyplo_version >= 0x7DE0403)	
+	if (dyplo_version >= 0x7DE0403)
 		dev->stream_id_width = 2;
 	else if (dyplo_version > 0x7DE0101)
 		dev->stream_id_width = 3;

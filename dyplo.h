@@ -160,6 +160,20 @@ struct dyplo_route_t  {
 	struct dyplo_route_item_t* proutes;
 };
 
+struct dyplo_buffer_block_alloc_req {
+	__u32 size;	/* Size of each buffer (will be page aligned) */
+	__u32 count;	/* Number of buffers */
+};
+
+struct dyplo_buffer_block {
+	__u32 id;	/* 0-based index of the buffer */
+	__u32 offset;	/* Location of data in memory map */
+	__u32 size;	/* Size of buffer */
+	__u32 bytes_used; /* How much actually is in use */
+	__u16 user_signal; /* User signals (framing) either way */
+	__u16 state; /* Who's owner of the buffer */
+};
+
 #define DYPLO_IOC_MAGIC	'd'
 #define DYPLO_IOC_ROUTE_CLEAR	0x00
 #define DYPLO_IOC_ROUTE_SET	0x01
@@ -182,6 +196,13 @@ struct dyplo_route_t  {
 
 #define DYPLO_IOC_USERSIGNAL_QUERY	0x12
 #define DYPLO_IOC_USERSIGNAL_TELL	0x13
+
+#define DYPLO_IOC_DMABLOCK_ALLOC	0x20
+#define DYPLO_IOC_DMABLOCK_FREE 	0x21
+#define DYPLO_IOC_DMABLOCK_QUERY	0x22
+#define DYPLO_IOC_DMABLOCK_ENQUEUE	0x23
+#define DYPLO_IOC_DMABLOCK_DEQUEUE	0x24
+
 
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
@@ -230,3 +251,10 @@ struct dyplo_route_t  {
  * that aren't part of the actual data, but control the flow. */
 #define DYPLO_IOCQUSERSIGNAL   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_USERSIGNAL_QUERY)
 #define DYPLO_IOCTUSERSIGNAL   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_USERSIGNAL_TELL)
+
+/* Dyplo's IIO-alike DMA block interface */
+#define DYPLO_IOCDMABLOCK_ALLOC	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_ALLOC, struct dyplo_buffer_block_alloc_req)
+#define DYPLO_IOCDMABLOCK_FREE 	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_FREE)
+#define DYPLO_IOCDMABLOCK_QUERY	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_QUERY, struct dyplo_buffer_block)
+#define DYPLO_IOCDMABLOCK_ENQUEUE	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_ENQUEUE, struct dyplo_buffer_block)
+#define DYPLO_IOCDMABLOCK_DEQUEUE	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_DEQUEUE, struct dyplo_buffer_block)

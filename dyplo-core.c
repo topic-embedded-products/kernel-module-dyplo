@@ -2440,7 +2440,9 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 	dyplo_version = ioread32_quick(dev->base + (DYPLO_REG_CONTROL_DYPLO_VERSION>>2));
 	dev_info(device, "Dyplo version %d.%d.%d\n",
 		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF, dyplo_version & 0xFF);
-	if (dyplo_version > 0x7DE0101)
+	if (dyplo_version >= 0x7DE0403)	
+		dev->stream_id_width = 2;
+	else if (dyplo_version > 0x7DE0101)
 		dev->stream_id_width = 3;
 	else
 		dev->stream_id_width = 5;

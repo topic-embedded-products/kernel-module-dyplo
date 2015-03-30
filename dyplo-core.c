@@ -2385,6 +2385,11 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 	u8 number_of_fifo_devices;
 	u8 i;
 
+	if (!fifo_dev) {
+		seq_printf(m, "  CPU node not registered\n");
+		return;
+	}
+
 	irq_w_mask = ioread32_quick(control_base + (DYPLO_REG_FIFO_IRQ_MASK>>2));
 	irq_w_status = ioread32_quick(control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2));
 	if (cfg_dev->isr == dyplo_fifo_isr_v1) {
@@ -2444,6 +2449,11 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 	struct dyplo_dma_dev *dma_dev = cfg_dev->private_data;
 	u32 status;
 	
+	if (!dma_dev) {
+		seq_printf(m, "  DMA node not registered\n");
+		return;
+	}
+
 	seq_printf(m, "  CPU to PL (%c): sz=%u hd=%u tl=%u ",
 		(dma_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
 		dma_dev->dma_to_logic_memory_size,

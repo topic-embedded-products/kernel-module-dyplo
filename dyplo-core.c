@@ -2130,11 +2130,6 @@ static int create_sub_devices_cpu_fifo(
 		return -EINVAL;
 	}
 
-	if (dev->count_fifo_write_devices || dev->count_fifo_write_devices) {
-		dev_err(device, "Multiple CPU nodes not supported yet\n");
-		return -EBUSY;
-	}
-
 	fifo_ctl_dev = devm_kzalloc(device,
 		sizeof(struct dyplo_fifo_control_dev), GFP_KERNEL);
 	if (!fifo_ctl_dev)

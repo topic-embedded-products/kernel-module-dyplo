@@ -159,11 +159,11 @@ static u32 dyplo_cfg_get_id(const struct dyplo_config_dev *cfg_dev)
 }
 static int dyplo_number_of_input_queues(const struct dyplo_config_dev *cfg_dev)
 {
-	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_WRITE_COUNT>>2));
+	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_FIFO_FROM_BACKPLANE_COUNT>>2));
 }
 static int dyplo_number_of_output_queues(const struct dyplo_config_dev *cfg_dev)
 {
-	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_READ_COUNT>>2));
+	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_FIFO_TO_BACKPLANE_COUNT>>2));
 }
 
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
@@ -2137,8 +2137,8 @@ static int create_sub_devices_cpu_fifo(
 	fifo_ctl_dev->config_parent = cfg_dev;
 	cfg_dev->private_data = fifo_ctl_dev;
 
-	number_of_write_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_WRITE_COUNT>>2));
-	number_of_read_fifos = ioread32_quick(cfg_dev->control_base + (DYPLO_REG_CPU_FIFO_READ_COUNT>>2));
+	number_of_write_fifos = dyplo_number_of_output_queues(cfg_dev);
+	number_of_read_fifos = dyplo_number_of_input_queues(cfg_dev);
 	fifo_ctl_dev->fifo_devices = devm_kcalloc(device,
 		number_of_write_fifos + number_of_read_fifos, sizeof(struct dyplo_fifo_dev),
 		GFP_KERNEL);

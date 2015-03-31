@@ -72,6 +72,14 @@
 #define DYPLO_REG_AXI_COUNTER_BASE	0x1C
 #define DYPLO_REG_CPU_COUNTER_BASE	(0x60+DYPLO_NODE_REG_SIZE)
 
+/* Layout common to all nodes */
+
+/* Queue information */
+#define DYPLO_REG_FIFO_FROM_BACKPLANE_COUNT	0x44
+#define DYPLO_REG_FIFO_TO_BACKPLANE_COUNT	0x48
+#define DYPLO_REG_FIFO_FROM_BACKPLANE_DEPTH	0x4C
+#define DYPLO_REG_FIFO_TO_BACKPLANE_DEPTH	0x50
+
 /* Specific layout of the CPU/PL communication node */
 
 /* Layout of V2 interrupt status registers */
@@ -89,11 +97,6 @@
 #define DYPLO_REG_FIFO_READ_IRQ_SET	0x38
 #define DYPLO_REG_FIFO_READ_IRQ_CLR	0x3C
 
-/* Queue information */
-#define DYPLO_REG_CPU_FIFO_WRITE_COUNT	0x44
-#define DYPLO_REG_CPU_FIFO_READ_COUNT	0x48
-#define DYPLO_REG_CPU_FIFO_WRITE_DEPTH	0x4C
-#define DYPLO_REG_CPU_FIFO_READ_DEPTH	0x50
 /* Read level threshold */
 #define DYPLO_REG_FIFO_READ_THD_BASE	0x100
 /* Actual fill level */

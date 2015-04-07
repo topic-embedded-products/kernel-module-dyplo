@@ -107,8 +107,9 @@ struct dyplo_dma_to_logic_operation {
 struct dyplo_dma_from_logic_operation {
 	char* addr;
 	unsigned int size;
-	unsigned int user_signal;
 	unsigned int next_tail;
+	u16 user_signal;
+	u16 short_transfer; /* Non-zero if size < blocksize */
 };
 
 struct dyplo_dma_dev
@@ -1803,6 +1804,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 				current_op->addr = ((char*)dma_dev->dma_from_logic_memory) + tail;
 				current_op->user_signal = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_USERBITS>>2));
 				current_op->size = ioread32(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE>>2));
+				current_op->short_transfer = (current_op->size != dma_dev->dma_from_logic_block_size);
 				tail += dma_dev->dma_from_logic_block_size;
 				if (tail == dma_dev->dma_from_logic_memory_size)
 					tail = 0;
@@ -1864,6 +1866,8 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 					dma_dev->dma_from_logic_tail);
 				/* We moved the tail up, so submit more work to logic */
 				results_avail = dyplo_dma_from_logic_pump(dma_dev);
+				if (current_op->short_transfer)
+					break; /* Usersignal change, return immediately */
 			}
 		}
 	}

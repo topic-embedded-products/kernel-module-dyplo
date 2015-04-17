@@ -2161,7 +2161,7 @@ static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 
 	block = &dma_dev->dma_to_logic_blocks.blocks[request.id];
 	if (block->data.state)
-		return -EINVAL;
+		return -EBUSY;
 
 	block->data.bytes_used = request.bytes_used;
 	block->data.user_signal = request.user_signal;
@@ -2388,10 +2388,10 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 	struct dyplo_buffer_block __user *arg)
 {
 	__u32 request_id;
+	__u32 request_bytes_used;
 	struct dyplo_dma_block *block;
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 status_reg;
-	u8 num_free_entries;
 
 	if (get_user(request_id, &arg->id))
 		return -EFAULT;
@@ -2401,20 +2401,25 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 
 	block = &dma_dev->dma_from_logic_blocks.blocks[request_id];
 	if (block->data.state)
+		return -EBUSY;
+
+	if (get_user(request_bytes_used, &arg->bytes_used))
+		return -EFAULT;
+	if ((request_bytes_used > block->data.size) || (request_bytes_used == 0))
 		return -EINVAL;
 
-	/* TODO: Blocking wait for room instead */
+	/* Should not block here because we never allocate more blocks than
+	 * what fits in the hardware queue. */
 	status_reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
 	pr_debug("%s status=%#x\n", __func__, status_reg);
-	num_free_entries = (status_reg >> 16) & 0xFF;
-	if (!num_free_entries)
+	if (!(status_reg & 0xFF0000))
 		return -EWOULDBLOCK;
+
 	/* Send to logic */
 	pr_debug("%s sending addr=%#x size=%u\n", __func__,
 			(u32)block->phys_addr, block->data.size);
 	iowrite32(block->phys_addr, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR>>2));
-	iowrite32(block->data.size, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
-	--num_free_entries;
+	iowrite32(request_bytes_used, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
 	block->data.bytes_used = 0;
 	block->data.state = 1;
 

@@ -132,7 +132,16 @@ struct dyplo_dma_block_set {
 	struct dyplo_dma_block *blocks;
 	u32 size;
 	u32 count;
+	u32 flags;
 };
+
+/* Use DMA coherent memory. Depending on hardware HP/ACP, this may yield
+ * non-cachable memory which is particularly noticeable on logic-to-cpu
+ * unless you have hardware coherency (dma-coherent in DT). */
+#define DYPLO_DMA_BLOCK_FLAG_COHERENT	1
+/* Use streaming instead of coherent memory. This requires cacheline
+ * maintenance which may cost more than actually copying the data. */
+#define DYPLO_DMA_BLOCK_FLAG_STREAMING	2
 
 struct dyplo_dma_dev
 {
@@ -2030,24 +2039,54 @@ static int dyplo_dma_get_route_id(struct dyplo_dma_dev *dma_dev)
 	return dyplo_dma_get_index(dma_dev);
 }
 
-static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_block_set* dma_block_set)
+static void dyplo_dma_common_block_free_streaming(struct dyplo_dev *dev,
+	struct dyplo_dma_block_set* dma_block_set,
+	enum dma_data_direction direction)
 {
-	struct dyplo_dev *dev = dma_dev->config_parent->parent;
 	u32 i;
+	DEFINE_DMA_ATTRS(attrs);
+
+	dma_set_attr(DMA_ATTR_WRITE_COMBINE, &attrs);
+	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &attrs);
+	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
 
 	for (i = 0; i < dma_block_set->count; ++i) {
 		struct dyplo_dma_block *block = &dma_block_set->blocks[i];
 		if (block->mem_addr) {
-			dma_free_coherent(dev->device, block->data.size,
-				block->mem_addr, block->phys_addr);
+			dma_unmap_single_attrs(dev->device, block->phys_addr,
+					block->data.size, direction, &attrs);
+			kfree(block->mem_addr);
 		}
 	}
+}
+
+static void dyplo_dma_common_block_free_coherent(struct dyplo_dev *dev,
+	struct dyplo_dma_block_set* dma_block_set,
+	enum dma_data_direction direction)
+{
+	u32 i;
+
+	for (i = 0; i < dma_block_set->count; ++i) {
+		struct dyplo_dma_block *block = &dma_block_set->blocks[i];
+		if (block->mem_addr)
+			dma_free_coherent(dev->device, block->data.size,
+				block->mem_addr, block->phys_addr);
+	}
+}
+
+static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_dma_block_set* dma_block_set,
+	enum dma_data_direction direction)
+{
+	if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+		dyplo_dma_common_block_free_streaming(dma_dev->config_parent->parent, dma_block_set, direction);
+	else
+		dyplo_dma_common_block_free_coherent(dma_dev->config_parent->parent, dma_block_set, direction);
 	kfree(dma_block_set->blocks);
 	dma_block_set->blocks = NULL;
 	dma_block_set->count = 0;
 	dma_block_set->size = 0;
-
+	dma_block_set->flags = 0;
 	return 0;
 }
 
@@ -2055,13 +2094,13 @@ static int dyplo_dma_to_logic_block_free(struct dyplo_dma_dev *dma_dev)
 {
 	/* Reset the device to release all resources */
 	dyplo_dma_to_logic_reset(dma_dev);
-	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_to_logic_blocks);
+	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 }
 
-
-static int dyplo_dma_common_block_alloc_one(
+static int dyplo_dma_common_block_alloc_one_coherent(
 	struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_block *block)
+	struct dyplo_dma_block *block,
+	enum dma_data_direction direction)
 {
 	struct dyplo_dev *dev = dma_dev->config_parent->parent;
 
@@ -2069,16 +2108,49 @@ static int dyplo_dma_common_block_alloc_one(
 		block->data.size, &block->phys_addr, GFP_KERNEL);
 	if (!block->mem_addr)
 		return -ENOMEM;
+
+	return 0;
+}
+
+static int dyplo_dma_common_block_alloc_one_streaming(
+	struct dyplo_dma_dev *dma_dev,
+	struct dyplo_dma_block *block,
+	enum dma_data_direction direction)
+{
+	struct dyplo_dev *dev = dma_dev->config_parent->parent;
+	int ret;
+	DEFINE_DMA_ATTRS(attrs);
+
+	dma_set_attr(DMA_ATTR_WRITE_COMBINE, &attrs);
+	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &attrs);
+	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
+
+	block->mem_addr = kmalloc(block->data.size, GFP_KERNEL | GFP_DMA);
+	if (!block->mem_addr)
+		return -ENOMEM;
+	block->phys_addr = dma_map_single_attrs(dev->device, block->mem_addr,
+		block->data.size, direction, &attrs);
+	ret = dma_mapping_error(dev->device, block->phys_addr);
+	if (unlikely(ret)) {
+		kfree(block->mem_addr);
+		block->mem_addr = NULL;
+		return ret;
+	}
+
 	return 0;
 }
 
 static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
-	struct dyplo_buffer_block_alloc_req *request,
-	struct dyplo_dma_block_set* dma_block_set)
+	struct dyplo_dma_configuration_req *request,
+	struct dyplo_dma_block_set* dma_block_set,
+	enum dma_data_direction direction)
 {
 	struct dyplo_dma_block *block;
 	u32 i;
 	int ret;
+
+	pr_debug("%s mode=%u count=%u size=%u\n", __func__,
+		request->mode, request->count, request->size);
 
 	if (!request->size || !request->count)
 		return -EINVAL;
@@ -2092,13 +2164,18 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 	dma_block_set->blocks = block;
 	dma_block_set->size = request->size;
 	dma_block_set->count = request->count;
+	dma_block_set->flags = (request->mode == DYPLO_DMA_MODE_BLOCK_STREAMING) ?
+		DYPLO_DMA_BLOCK_FLAG_STREAMING : DYPLO_DMA_BLOCK_FLAG_COHERENT;
 	for (i = 0; i < request->count; ++i) {
 		block->data.id = i;
 		block->data.size = request->size;
 		block->data.offset = i * request->size;
-		ret = dyplo_dma_common_block_alloc_one(dma_dev, block);
+		if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+			ret = dyplo_dma_common_block_alloc_one_streaming(dma_dev, block, direction);
+		else
+			ret = dyplo_dma_common_block_alloc_one_coherent(dma_dev, block, direction);
 		if (unlikely(ret)) {
-			dyplo_dma_common_block_free(dma_dev, dma_block_set);
+			dyplo_dma_common_block_free(dma_dev, dma_block_set, direction);
 			return ret;
 		}
 		++block;
@@ -2106,23 +2183,27 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 	return 0;
 }
 
-
+/* For backward compatibility */
 static int dyplo_dma_to_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
 	struct dyplo_buffer_block_alloc_req __user *arg)
 {
 	struct dyplo_buffer_block_alloc_req request;
+	struct dyplo_dma_configuration_req r;
 	int ret;
 
 	if (copy_from_user(&request, arg, sizeof(request)))
 		return -EFAULT;
-
-	pr_debug("%s count=%u size=%u\n", __func__, request.count, request.size);
+	r.mode = DYPLO_DMA_MODE_BLOCK_COHERENT;
+	r.size = request.size;
+	r.count = request.count;
 
 	dyplo_dma_to_logic_block_free(dma_dev);
-	ret = dyplo_dma_common_block_alloc(dma_dev, &request, &dma_dev->dma_to_logic_blocks);
+	ret = dyplo_dma_common_block_alloc(dma_dev, &r, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 	if (!ret)
 		return ret;
 
+	request.size = r.size;
+	request.count = r.count;
 	if (copy_to_user(arg, &request, sizeof(request)))
 		return -EFAULT;
 
@@ -2165,6 +2246,11 @@ static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 
 	block->data.bytes_used = request.bytes_used;
 	block->data.user_signal = request.user_signal;
+
+	if (dma_dev->dma_to_logic_blocks.flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+		dma_sync_single_for_device(dma_dev->config_parent->parent->device,
+			block->phys_addr, block->data.bytes_used, DMA_TO_DEVICE);
+
 	/* This operation never blocks, unless something is wrong in HW */
 	if (!(ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2)) & 0xFF0000))
 		return -EWOULDBLOCK;
@@ -2227,6 +2313,10 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 		return -EIO;
 	}
 
+	if (dma_dev->dma_to_logic_blocks.flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+		dma_sync_single_for_cpu(dma_dev->config_parent->parent->device,
+			block->phys_addr, block->data.bytes_used, DMA_TO_DEVICE);
+
 	block->data.state = 0;
 
 	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
@@ -2265,8 +2355,14 @@ static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
 
 	vma->vm_pgoff = 0;
 	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
-	return dma_mmap_coherent(dma_dev->config_parent->parent->device,
-		vma, block->mem_addr, block->phys_addr,	block->data.size);
+
+	if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+		return remap_pfn_range(vma, vma->vm_start,
+			page_to_pfn(virt_to_page(block->mem_addr)), /* Or just block->phys_addr? */
+			block->data.size, vma->vm_page_prot);
+	else
+		return dma_mmap_coherent(dma_dev->config_parent->parent->device,
+			vma, block->mem_addr, block->phys_addr, block->data.size);
 }
 
 static int dyplo_dma_to_logic_mmap(struct file *filp, struct vm_area_struct *vma)
@@ -2275,6 +2371,47 @@ static int dyplo_dma_to_logic_mmap(struct file *filp, struct vm_area_struct *vma
 
 	return dyplo_dma_common_mmap(dma_dev, vma,
 		&dma_dev->dma_to_logic_blocks);
+}
+
+static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_dma_configuration_req __user *arg)
+{
+	struct dyplo_dma_configuration_req request;
+	int ret;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+
+	pr_debug("%s mode=%d count=%u size=%u\n", __func__,
+		request.mode, request.count, request.size);
+
+	dyplo_dma_to_logic_block_free(dma_dev);
+
+	switch (request.mode) {
+		case DYPLO_DMA_MODE_STANDALONE:
+			ret = dyplo_dma_common_block_alloc(dma_dev,
+				&request, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
+			break;
+		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
+			request.size = dma_dev->dma_to_logic_block_size;
+			request.count = dma_dev->dma_to_logic_memory_size / dma_dev->dma_to_logic_block_size;
+			ret = 0;
+			break;
+		case DYPLO_DMA_MODE_BLOCK_COHERENT:
+		case DYPLO_DMA_MODE_BLOCK_STREAMING:
+			ret = dyplo_dma_common_block_alloc(dma_dev,
+				&request, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
+			break;
+		default:
+			ret = -EINVAL;
+	}
+	if (ret)
+		return ret;
+
+	if (copy_to_user(arg, &request, sizeof(request)))
+		return -EFAULT;
+
+	return 0;
 }
 
 static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -2318,6 +2455,9 @@ static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsign
 		case DYPLO_IOC_USERSIGNAL_TELL:
 			iowrite32_quick(arg, dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 			return 0;
+		case DYPLO_IOC_DMA_RECONFIGURE:
+			return dyplo_dma_to_logic_reconfigure(dma_dev,
+				(struct dyplo_dma_configuration_req __user *)arg);
 		case DYPLO_IOC_DMABLOCK_ALLOC:
 			return dyplo_dma_to_logic_block_alloc(dma_dev,
 				(struct dyplo_buffer_block_alloc_req __user *)arg);
@@ -2342,25 +2482,30 @@ static int dyplo_dma_from_logic_block_free(struct dyplo_dma_dev *dma_dev)
 {
 	/* Reset the device to release all resources */
 	dyplo_dma_from_logic_reset(dma_dev);
-	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_from_logic_blocks);
+	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
 }
 
 static int dyplo_dma_from_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
 	struct dyplo_buffer_block_alloc_req __user *arg)
 {
 	struct dyplo_buffer_block_alloc_req request;
+	struct dyplo_dma_configuration_req r;
 	int ret;
 
 	if (copy_from_user(&request, arg, sizeof(request)))
 		return -EFAULT;
-
-	pr_debug("%s count=%u size=%u\n", __func__, request.count, request.size);
+	r.mode = DYPLO_DMA_MODE_BLOCK_STREAMING;
+	r.size = request.size;
+	r.count = request.count;
 
 	dyplo_dma_from_logic_block_free(dma_dev);
-	ret = dyplo_dma_common_block_alloc(dma_dev, &request, &dma_dev->dma_from_logic_blocks);
+	ret = dyplo_dma_common_block_alloc(dma_dev, &r,
+		&dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
 	if (!ret)
 		return ret;
 
+	request.size = r.size;
+	request.count = r.count;
 	if (copy_to_user(arg, &request, sizeof(request)))
 		return -EFAULT;
 
@@ -2407,6 +2552,10 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 		return -EFAULT;
 	if ((request_bytes_used > block->data.size) || (request_bytes_used == 0))
 		return -EINVAL;
+
+	if (dma_dev->dma_from_logic_blocks.flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+		dma_sync_single_for_device(dma_dev->config_parent->parent->device,
+			block->phys_addr, block->data.bytes_used, DMA_FROM_DEVICE);
 
 	/* Should not block here because we never allocate more blocks than
 	 * what fits in the hardware queue. */
@@ -2480,6 +2629,10 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 	block->data.bytes_used = ioread32(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE>>2));
 	block->data.state = 0;
 
+	if (dma_dev->dma_from_logic_blocks.flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+		dma_sync_single_for_cpu(dma_dev->config_parent->parent->device,
+			block->phys_addr, block->data.bytes_used, DMA_FROM_DEVICE);
+
 	if (copy_to_user(arg, &block->data, sizeof(struct dyplo_buffer_block)))
 		return -EFAULT;
 
@@ -2494,6 +2647,46 @@ static int dyplo_dma_from_logic_mmap(struct file *filp, struct vm_area_struct *v
 		&dma_dev->dma_from_logic_blocks);
 }
 
+static int dyplo_dma_from_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
+	struct dyplo_dma_configuration_req __user *arg)
+{
+	struct dyplo_dma_configuration_req request;
+	int ret;
+
+	if (copy_from_user(&request, arg, sizeof(request)))
+		return -EFAULT;
+
+	pr_debug("%s mode=%d count=%u size=%u\n", __func__,
+		request.mode, request.count, request.size);
+
+	dyplo_dma_from_logic_block_free(dma_dev);
+
+	switch (request.mode) {
+		case DYPLO_DMA_MODE_STANDALONE:
+			ret = dyplo_dma_common_block_alloc(dma_dev,
+				&request, &dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
+			break;
+		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
+			request.size = dma_dev->dma_from_logic_block_size;
+			request.count = dma_dev->dma_from_logic_memory_size / dma_dev->dma_from_logic_block_size;
+			ret = 0;
+			break;
+		case DYPLO_DMA_MODE_BLOCK_COHERENT:
+		case DYPLO_DMA_MODE_BLOCK_STREAMING:
+			ret = dyplo_dma_common_block_alloc(dma_dev,
+				&request, &dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
+			break;
+		default:
+			ret = -EINVAL;
+	}
+	if (ret)
+		return ret;
+
+	if (copy_to_user(arg, &request, sizeof(request)))
+		return -EFAULT;
+
+	return 0;
+}
 
 static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
@@ -2535,6 +2728,9 @@ static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsi
 			return dma_dev->dma_from_logic_current_op.user_signal;
 		case DYPLO_IOC_USERSIGNAL_TELL:
 			return -EACCES;
+		case DYPLO_IOC_DMA_RECONFIGURE:
+			return dyplo_dma_from_logic_reconfigure(dma_dev,
+				(struct dyplo_dma_configuration_req __user *)arg);
 		case DYPLO_IOC_DMABLOCK_ALLOC:
 			return dyplo_dma_from_logic_block_alloc(dma_dev,
 				(struct dyplo_buffer_block_alloc_req __user *)arg);

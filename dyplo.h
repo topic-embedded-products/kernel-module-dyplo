@@ -174,6 +174,26 @@ struct dyplo_buffer_block {
 	__u16 state; /* Who's owner of the buffer */
 };
 
+/* DMA not used for CPU-logic transfers at all, only for logic
+ * storage. Buffer can be mmap'ed for inspection. */
+#define DYPLO_DMA_MODE_STANDALONE	0
+/* (default) Copies data from userspace into a kernel buffer and
+ * vice versa. */
+#define DYPLO_DMA_MODE_RINGBUFFER_BOUNCE	1
+/* Blockwise data transfers, using coherent memory. This will result in
+ * slow non-cached memory being used when hardware coherency is not
+ * available, but it is the fastest mode. */
+#define DYPLO_DMA_MODE_BLOCK_COHERENT	2
+/* Blockwise data transfers, using  streaming DMA into cachable memory.
+ * Managing the cache may cost more than actually copying the data. */
+#define DYPLO_DMA_MODE_BLOCK_STREAMING	3
+
+struct dyplo_dma_configuration_req {
+	__u32 mode;	/* One of DYPLO_DMA_MODE.. */
+	__u32 size;	/* Size of each buffer (will be page aligned) */
+	__u32 count;	/* Number of buffers */
+};
+
 #define DYPLO_IOC_MAGIC	'd'
 #define DYPLO_IOC_ROUTE_CLEAR	0x00
 #define DYPLO_IOC_ROUTE_SET	0x01
@@ -197,6 +217,7 @@ struct dyplo_buffer_block {
 #define DYPLO_IOC_USERSIGNAL_QUERY	0x12
 #define DYPLO_IOC_USERSIGNAL_TELL	0x13
 
+#define DYPLO_IOC_DMA_RECONFIGURE	0x1F
 #define DYPLO_IOC_DMABLOCK_ALLOC	0x20
 #define DYPLO_IOC_DMABLOCK_FREE 	0x21
 #define DYPLO_IOC_DMABLOCK_QUERY	0x22
@@ -251,6 +272,9 @@ struct dyplo_buffer_block {
  * that aren't part of the actual data, but control the flow. */
 #define DYPLO_IOCQUSERSIGNAL   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_USERSIGNAL_QUERY)
 #define DYPLO_IOCTUSERSIGNAL   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_USERSIGNAL_TELL)
+
+/* DMA configuration */
+#define DYPLO_IOCDMA_RECONFIGURE _IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMA_RECONFIGURE, struct dyplo_dma_configuration_req)
 
 /* Dyplo's IIO-alike DMA block interface */
 #define DYPLO_IOCDMABLOCK_ALLOC	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_ALLOC, struct dyplo_buffer_block_alloc_req)

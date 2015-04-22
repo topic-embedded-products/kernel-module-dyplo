@@ -3124,6 +3124,10 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 	else
 		dev->stream_id_width = 5;
 
+	retval = dma_set_mask_and_coherent(device, DMA_BIT_MASK(32));
+	if (retval)
+		dev_warn(device, "Failed to set DMA mask: %d", retval);
+
 	dev->number_of_config_devices =
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_CPU_NODES_COUNT>>2)) +
 		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_IO_NODES_COUNT>>2)) +

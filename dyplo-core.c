@@ -1626,18 +1626,27 @@ exit_open:
 	return status;
 }
 
-static int dyplo_dma_release(struct inode *inode, struct file *filp)
+static int dyplo_dma_common_release(struct file *filp, mode_t flag_to_clear)
 {
 	struct dyplo_dma_dev *dma_dev = filp->private_data;
-	struct dyplo_config_dev *cfg_dev = dma_dev->config_parent;
-	struct dyplo_dev *dev = cfg_dev->parent;
+	struct dyplo_dev *dev = dma_dev->config_parent->parent;
 
-	pr_debug("%s(mode=%#x)\n", __func__, filp->f_mode);
+	pr_debug("%s(mode=%#x %#x)\n", __func__, filp->f_mode, dma_dev->open_mode);
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
-	dma_dev->open_mode &= ~filp->f_mode; /* Clear in use bits */
+	dma_dev->open_mode &= ~flag_to_clear; /* Clear in use bit */
 	up(&dev->fop_sem);
 	return 0;
+}
+
+static int dyplo_dma_to_logic_release(struct inode *inode, struct file *filp)
+{
+	return dyplo_dma_common_release(filp, FMODE_WRITE);
+}
+
+static int dyplo_dma_from_logic_release(struct inode *inode, struct file *filp)
+{
+	return dyplo_dma_common_release(filp, FMODE_READ);
 }
 
 static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
@@ -2760,7 +2769,7 @@ static const struct file_operations dyplo_dma_to_logic_fops =
 	.mmap = dyplo_dma_to_logic_mmap,
 	.unlocked_ioctl = dyplo_dma_to_logic_ioctl,
 	.open = dyplo_dma_open,
-	.release = dyplo_dma_release,
+	.release = dyplo_dma_to_logic_release,
 };
 
 static const struct file_operations dyplo_dma_from_logic_fops =
@@ -2772,7 +2781,7 @@ static const struct file_operations dyplo_dma_from_logic_fops =
 	.mmap = dyplo_dma_from_logic_mmap,
 	.unlocked_ioctl = dyplo_dma_from_logic_ioctl,
 	.open = dyplo_dma_open,
-	.release = dyplo_dma_release,
+	.release = dyplo_dma_from_logic_release,
 };
 
 /* Common file operations struct. "open" will set one of the above into
@@ -2781,7 +2790,6 @@ static const struct file_operations dyplo_dma_fops =
 {
 	.owner = THIS_MODULE,
 	.open = dyplo_dma_open,
-	.release = dyplo_dma_release,
 };
 
 

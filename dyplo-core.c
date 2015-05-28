@@ -3381,23 +3381,37 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 		status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_STANDALONE_BLOCKSIZE>>2));
 		seq_printf(m, "bs=%u\n", status);
 	} else {
-		seq_printf(m, "  CPU to PL (%c): sz=%u hd=%u tl=%u ",
-			(dma_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
-			dma_dev->dma_to_logic_memory_size,
-			dma_dev->dma_to_logic_head,
-			dma_dev->dma_to_logic_tail);
+		seq_printf(m, "  CPU to PL (%c):",
+			(dma_dev->open_mode & FMODE_WRITE) ? 'w' : '-');
+		if (dma_dev->dma_to_logic_blocks.blocks)
+			seq_printf(m, " cnt=%u sz=%u fl=%#x",
+				dma_dev->dma_to_logic_blocks.count,
+				dma_dev->dma_to_logic_blocks.size,
+				dma_dev->dma_to_logic_blocks.flags);
+		else
+			seq_printf(m, " sz=%u hd=%u tl=%u",
+				dma_dev->dma_to_logic_memory_size,
+				dma_dev->dma_to_logic_head,
+				dma_dev->dma_to_logic_tail);
 		status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
-		seq_printf(m, "re=%u fr=%u idle=%c\n",
+		seq_printf(m, " re=%u fr=%u idle=%c\n",
 			status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 
-		seq_printf(m, "  PL to CPU (%c): sz=%u hd=%u tl=%u full=%c ",
-			(dma_dev->open_mode & FMODE_READ) ? 'r' : '-',
-			dma_dev->dma_from_logic_memory_size,
-			dma_dev->dma_from_logic_head,
-			dma_dev->dma_from_logic_tail,
-			dma_dev->dma_from_logic_full ? 'Y':'N');
+		seq_printf(m, "  PL to CPU (%c):",
+			(dma_dev->open_mode & FMODE_READ) ? 'r' : '-');
+		if (dma_dev->dma_from_logic_blocks.blocks)
+			seq_printf(m, " cnt=%u sz=%u fl=%#x",
+				dma_dev->dma_from_logic_blocks.count,
+				dma_dev->dma_from_logic_blocks.size,
+				dma_dev->dma_from_logic_blocks.flags);
+		else
+			seq_printf(m, " sz=%u hd=%u tl=%u full=%c",
+				dma_dev->dma_from_logic_memory_size,
+				dma_dev->dma_from_logic_head,
+				dma_dev->dma_from_logic_tail,
+				dma_dev->dma_from_logic_full ? 'Y':'N');
 		status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
-		seq_printf(m, "re=%u fr=%u idle=%c\n",
+		seq_printf(m, " re=%u fr=%u idle=%c\n",
 			status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 	}
 }

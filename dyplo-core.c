@@ -3,7 +3,7 @@
  *
  * Dyplo loadable kernel module.
  *
- * (C) Copyright 2013,2014 Topic Embedded Products B.V. (http://www.topic.nl).
+ * (C) Copyright 2013-2015 Topic Embedded Products B.V. (http://www.topic.nl).
  * All rights reserved.
  *
  * This file is part of kernel-module-dyplo.
@@ -45,10 +45,6 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Products <www.topic.nl>");
 
-/* When defined, copies data directly to/from user space instead of
- * bouncing via an intermediate kernel buffer. */
-/* #define ALLOW_DIRECT_USER_IOMEM_TRANSFERS */
-
 /* When defined, transfers end-of-file markers through Dyplo as
  * user signals. This allows you to use something like
  * cat inputfile > /dev/dyplow0 & ; cat /dev/dyplor0 > resultfile
@@ -85,9 +81,7 @@ struct dyplo_fifo_dev
 	int index;
 	unsigned int words_transfered;
 	unsigned int poll_treshold;
-#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 	void* transfer_buffer;
-#endif
 	u16 user_signal;
 	bool eof;
 	bool is_open;
@@ -859,13 +853,11 @@ static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
 		result = -EBUSY;
 		goto error;
 	}
-#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 	fifo_dev->transfer_buffer = kmalloc(DYPLO_FIFO_READ_MAX_BURST_SIZE, GFP_KERNEL);
 	if (unlikely(fifo_dev->transfer_buffer == NULL)) {
 		result = -ENOMEM;
 		goto error;
 	}
-#endif
 	fifo_dev->user_signal = 0;
 	fifo_dev->eof = false;
 	fifo_dev->is_open = true;
@@ -899,10 +891,8 @@ static int dyplo_fifo_read_release(struct inode *inode, struct file *filp)
 #endif
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
-#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 	kfree(fifo_dev->transfer_buffer);
 	fifo_dev->transfer_buffer = NULL;
-#endif
 	fifo_dev->is_open = false;
 	up(&dev->fop_sem);
 	return 0;
@@ -1005,18 +995,11 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 				bytes = count;
 			words = bytes >> 2;
 			pr_debug("%s copy_to_user %p (%u)\n", __func__, mapped_memory, (unsigned int)bytes);
-#ifdef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
-			if (unlikely(__copy_to_user(buf, mapped_memory, bytes))) {
-				status = -EFAULT;
-				goto error;
-			}
-#else
 			ioread32_rep(mapped_memory, fifo_dev->transfer_buffer, words);
 			if (unlikely(__copy_to_user(buf, fifo_dev->transfer_buffer, bytes))) {
 				status = -EFAULT;
 				goto error;
 			}
-#endif
 			fifo_dev->words_transfered += words;
 			len += bytes;
 			buf += bytes;
@@ -1191,13 +1174,11 @@ static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
 	filp->private_data = fifo_dev;
 	fifo_dev->user_signal = DYPLO_USERSIGNAL_ZERO;
 	fifo_dev->eof = false;
-#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 	fifo_dev->transfer_buffer = kmalloc(DYPLO_FIFO_WRITE_MAX_BURST_SIZE, GFP_KERNEL);
 	if (unlikely(fifo_dev->transfer_buffer == NULL)) {
 		result = -ENOMEM;
 		goto error;
 	}
-#endif
 	/* Set user signal register */
 	if (!dyplo_fifo_write_usersignal(fifo_dev, DYPLO_USERSIGNAL_ZERO)) {
 		printk(KERN_ERR "%s: Failed to reset usersignals on w%d\n",
@@ -1255,10 +1236,8 @@ error:
 #endif
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
-#ifndef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
 	kfree(fifo_dev->transfer_buffer);
 	fifo_dev->transfer_buffer = NULL;
-#endif
 	fifo_dev->is_open = false;
 	up(&dev->fop_sem);
 	return status;
@@ -1324,18 +1303,11 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 				bytes = count;
 			words = bytes >> 2;
 			pr_debug("%s copy_from_user %p (%u)\n", __func__, mapped_memory, (unsigned int)bytes);
-#ifdef ALLOW_DIRECT_USER_IOMEM_TRANSFERS
-			if (unlikely(__copy_from_user(mapped_memory, buf, bytes))) {
-				status = -EFAULT;
-				goto error;
-			}
-#else
 			if (unlikely(__copy_from_user(fifo_dev->transfer_buffer, buf, bytes))) {
 				status = -EFAULT;
 				goto error;
 			}
 			iowrite32_rep(mapped_memory, fifo_dev->transfer_buffer, words);
-#endif
 			fifo_dev->words_transfered += words;
 			len += bytes;
 			buf += bytes;

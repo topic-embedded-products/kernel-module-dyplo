@@ -136,6 +136,9 @@ struct dyplo_dma_block_set {
 /* Use streaming instead of coherent memory. This requires cacheline
  * maintenance which may cost more than actually copying the data. */
 #define DYPLO_DMA_BLOCK_FLAG_STREAMING	2
+/* Indicates that the memory pointers point to a shared block and should
+ * not be freed. */
+#define DYPLO_DMA_BLOCK_FLAG_SHAREDMEM	4
 
 struct dyplo_dma_dev
 {
@@ -2059,10 +2062,12 @@ static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
 	struct dyplo_dma_block_set* dma_block_set,
 	enum dma_data_direction direction)
 {
-	if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
-		dyplo_dma_common_block_free_streaming(dma_dev->config_parent->parent, dma_block_set, direction);
-	else
-		dyplo_dma_common_block_free_coherent(dma_dev->config_parent->parent, dma_block_set, direction);
+	if (!(dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_SHAREDMEM)) {
+		if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
+			dyplo_dma_common_block_free_streaming(dma_dev->config_parent->parent, dma_block_set, direction);
+		else
+			dyplo_dma_common_block_free_coherent(dma_dev->config_parent->parent, dma_block_set, direction);
+	}
 	kfree(dma_block_set->blocks);
 	dma_block_set->blocks = NULL;
 	dma_block_set->count = 0;
@@ -2147,7 +2152,36 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 	dma_block_set->count = request->count;
 	dma_block_set->flags = (request->mode == DYPLO_DMA_MODE_BLOCK_STREAMING) ?
 		DYPLO_DMA_BLOCK_FLAG_STREAMING : DYPLO_DMA_BLOCK_FLAG_COHERENT;
-	for (i = 0; i < request->count; ++i) {
+	if (request->mode != DYPLO_DMA_MODE_BLOCK_STREAMING) {
+		/* The pre-allocated buffers are coherent, so if the blocks fit
+		 * in there, we can just re-use the already allocated one */
+		if (direction == DMA_FROM_DEVICE) {
+			if (request->count * request->size <= dma_dev->dma_from_logic_memory_size) {
+				dma_block_set->flags |= DYPLO_DMA_BLOCK_FLAG_SHAREDMEM;
+				for (i = 0; i < request->count; ++i, ++block) {
+					block->data.id = i;
+					block->data.size = request->size;
+					block->data.offset = i * request->size;
+					block->mem_addr = ((char*)dma_dev->dma_from_logic_memory) + block->data.offset;
+					block->phys_addr = dma_dev->dma_from_logic_handle + block->data.offset;
+				}
+				return 0;
+			}
+		} else {
+			if (request->count * request->size <= dma_dev->dma_to_logic_memory_size) {
+				dma_block_set->flags |= DYPLO_DMA_BLOCK_FLAG_SHAREDMEM;
+				for (i = 0; i < request->count; ++i, ++block) {
+					block->data.id = i;
+					block->data.size = request->size;
+					block->data.offset = i * request->size;
+					block->mem_addr = ((char*)dma_dev->dma_to_logic_memory) + block->data.offset;
+					block->phys_addr = dma_dev->dma_to_logic_handle + block->data.offset;
+				}
+				return 0;
+			}
+		}
+	}
+	for (i = 0; i < request->count; ++i, ++block) {
 		block->data.id = i;
 		block->data.size = request->size;
 		block->data.offset = i * request->size;
@@ -2159,7 +2193,6 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 			dyplo_dma_common_block_free(dma_dev, dma_block_set, direction);
 			return ret;
 		}
-		++block;
 	}
 	return 0;
 }
@@ -2317,6 +2350,15 @@ static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
 
 	pr_debug("%s offset=%u\n", __func__, vm_offset);
 
+	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+
+	if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_SHAREDMEM) {
+		block = &dma_block_set->blocks[0];
+		return dma_mmap_coherent(dma_dev->config_parent->parent->device,
+			vma, block->mem_addr, block->phys_addr,
+			dma_block_set->size * dma_block_set->count);
+	}
+
 	for (i = 0; i < count; ++i) {
 		if (dma_block_set->blocks[i].data.offset == vm_offset) {
 			block = &dma_block_set->blocks[i];
@@ -2335,7 +2377,6 @@ static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
 	}
 
 	vma->vm_pgoff = 0;
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 
 	if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
 		return remap_pfn_range(vma, vma->vm_start,

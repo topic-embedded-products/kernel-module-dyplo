@@ -74,6 +74,26 @@ static const size_t dyplo_dma_memory_size = 256 * 1024;
 #define ioread32_quick	__raw_readl
 #define iowrite32_quick	__raw_writel
 
+static inline void dyplo_reg_write_quick(u32 __iomem *base, u32 reg, u32 value)
+{
+	iowrite32_quick(value, base + (reg >> 2));
+}
+
+static inline u32 dyplo_reg_read(u32 __iomem *base, u32 reg)
+{
+	return ioread32(base + (reg >> 2));
+}
+
+static inline u32 dyplo_reg_read_quick(u32 __iomem *base, u32 reg)
+{
+	return ioread32_quick(base + (reg >> 2));
+}
+
+static inline u32 dyplo_reg_read_quick_index(u32 __iomem *base, u32 reg, u32 index)
+{
+	return ioread32_quick(base + (reg >> 2) + index);
+}
+
 struct dyplo_fifo_dev
 {
 	struct dyplo_config_dev *config_parent;
@@ -188,15 +208,15 @@ static unsigned int dyplo_get_config_index(const struct dyplo_config_dev *cfg_de
 
 static u32 dyplo_cfg_get_id(const struct dyplo_config_dev *cfg_dev)
 {
-	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_ID>>2));
+	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_ID);
 }
 static int dyplo_number_of_input_queues(const struct dyplo_config_dev *cfg_dev)
 {
-	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_FIFO_FROM_BACKPLANE_COUNT>>2));
+	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_FIFO_FROM_BACKPLANE_COUNT);
 }
 static int dyplo_number_of_output_queues(const struct dyplo_config_dev *cfg_dev)
 {
-	return ioread32_quick(cfg_dev->control_base + (DYPLO_REG_FIFO_TO_BACKPLANE_COUNT>>2));
+	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_FIFO_TO_BACKPLANE_COUNT);
 }
 
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
@@ -331,12 +351,12 @@ static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
 			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if (ctl_route_base_out[queue_index] == route) {
+			if (ioread32_quick(ctl_route_base_out + queue_index) == route) {
 				pr_debug("removed route %d,%d->%d,%d\n",
 					ctl_index, queue_index,
 					(route >> dev->stream_id_width) - 1,
 					route & ((0x1 << dev->stream_id_width) - 1));
-				ctl_route_base_out[queue_index] = 0;
+				iowrite32_quick(0, ctl_route_base_out + queue_index);
 			}
 		}
 	}
@@ -365,7 +385,7 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 		route.srcFifo;
 	pr_debug("%s (%d) @ %p: %x\n", __func__, route.srcNode,
 		dst_control_addr, dst_route);
-	*dst_control_addr = dst_route;
+	iowrite32_quick(dst_route, dst_control_addr);
 	return 0;
 }
 
@@ -406,7 +426,7 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			unsigned int route = ctl_route_base[queue_index];
+			u32 route = ioread32_quick(ctl_route_base + queue_index);
 			if (route)
 			{
 				int src_ctl_index = route >> dev->stream_id_width;
@@ -435,10 +455,11 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 	const int match = (ctl_index_to_delete + 1) << dev->stream_id_width;
 	const int number_of_fifos =
 		dyplo_number_of_output_queues(&dev->config_devices[ctl_index_to_delete]);
-	int __iomem *ctl_route_base_out = dev->config_devices[ctl_index_to_delete].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
-	for (queue_index = 0; queue_index < number_of_fifos; ++queue_index) {
-		ctl_route_base_out[queue_index] = 0;
-	}
+	int __iomem *ctl_route_base_out =
+		dev->config_devices[ctl_index_to_delete].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+
+	for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
+		iowrite32_quick(0, ctl_route_base_out + queue_index);
 	for (ctl_index = 0; ctl_index < ctl_index_to_delete; ++ctl_index)
 	{
 		const int number_of_fifos =
@@ -447,9 +468,8 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if ((ctl_route_base_out[queue_index] & (0xFFFF << dev->stream_id_width) ) == match) {
-				ctl_route_base_out[queue_index] = 0;
-			}
+			if ((ioread32_quick(ctl_route_base_out + queue_index) & (0xFFFF << dev->stream_id_width) ) == match)
+				iowrite32_quick(0, ctl_route_base_out + queue_index);
 		}
 	}
 	for (ctl_index = ctl_index_to_delete+1; ctl_index < dev->number_of_config_devices; ++ctl_index)
@@ -460,9 +480,8 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if ((ctl_route_base_out[queue_index] & (0xFFFF << dev->stream_id_width) ) == match) {
-				ctl_route_base_out[queue_index] = 0;
-			}
+			if ((ioread32_quick(ctl_route_base_out + queue_index) & (0xFFFF << dev->stream_id_width) ) == match)
+				iowrite32_quick(0, ctl_route_base_out + queue_index);
 		}
 	}
 	return 0;
@@ -472,17 +491,15 @@ static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 {
 	int ctl_index;
 	int queue_index;
-	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
-	{
-		int __iomem *ctl_route_base;
+
+	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)	{
 		/* Remove outgoing routes */
 		const int number_of_fifos =
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
-		ctl_route_base = dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		int __iomem *ctl_route_base = 
+			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
-		{
-			ctl_route_base[queue_index] = 0;
-		}
+			iowrite32_quick(0, ctl_route_base + queue_index);
 	}
 	return 0;
 }
@@ -528,17 +545,15 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 			status = dyplo_ctl_route_delete(dev, arg);
 			break;
 		case DYPLO_IOC_BACKPLANE_STATUS:
-			status = *(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;
 		case DYPLO_IOC_BACKPLANE_ENABLE:
-			*(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_SET>>2)) = (arg << 1);
-			/* Read back the register to assure that the transaction is complete */
-			status = *(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+			dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_SET, arg << 1);
+			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;
 		case DYPLO_IOC_BACKPLANE_DISABLE:
-			*(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_CLR>>2)) = (arg << 1);
-			/* Read back the register to assure that the transaction is complete */
-			status = *(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+			dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_CLR, arg << 1);
+			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;
 		default:
 			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
@@ -732,24 +747,22 @@ static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 		case DYPLO_IOC_BACKPLANE_STATUS:
 			{
 				int index = dyplo_get_config_index(cfg_dev);
-				status = *(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+				status = dyplo_reg_read_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 				status &= (1 << index);
 			}
 			break;
 		case DYPLO_IOC_BACKPLANE_ENABLE:
 			{
 				int index = dyplo_get_config_index(cfg_dev);
-				*(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_SET>>2)) = (1 << (index+1));
-				/* Read back the register to assure that the transaction is complete */
-				status = *(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+				dyplo_reg_write_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_SET, 1 << (index+1));
+				status = dyplo_reg_read_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			}
 			break;
 		case DYPLO_IOC_BACKPLANE_DISABLE:
 			{
 				int index = dyplo_get_config_index(cfg_dev);
-				*(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_CLR>>2)) = (1 << (index+1));
-				/* Read back the register to assure that the transaction is complete */
-				status = *(cfg_dev->parent->base + (DYPLO_REG_BACKPLANE_ENABLE_STATUS>>2)) >> 1;
+				dyplo_reg_write_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_CLR, 1 << (index+1));
+				status = dyplo_reg_read_quick(cfg_dev->parent->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			}
 			break;
 		case DYPLO_IOC_RESET_FIFO_WRITE:
@@ -804,13 +817,10 @@ static bool dyplo_fifo_write_usersignal(struct dyplo_fifo_dev *fifo_dev, u16 use
 
 static u32 dyplo_fifo_read_level(struct dyplo_fifo_dev *fifo_dev)
 {
-	int index = fifo_dev->index;
-	int __iomem *control_base =
-		fifo_dev->config_parent->control_base;
-	int result = ioread32_quick(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index);
-	/* pr_debug("%s index=%d result=%#x @ %p\n", __func__, index, result,
-		(control_base + (DYPLO_REG_FIFO_READ_LEVEL_BASE>>2) + index)); */
-	return result;
+	return dyplo_reg_read_quick_index(
+		fifo_dev->config_parent->control_base,
+		DYPLO_REG_FIFO_READ_LEVEL_BASE,
+		fifo_dev->index);
 }
 
 static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
@@ -1129,12 +1139,10 @@ static const struct file_operations dyplo_fifo_read_fops =
 
 static int dyplo_fifo_write_level(struct dyplo_fifo_dev *fifo_dev)
 {
-	int index = fifo_dev->index;
-	__iomem int *control_base =
-		fifo_dev->config_parent->control_base;
-	u32 result = ioread32_quick(control_base + (DYPLO_REG_FIFO_WRITE_LEVEL_BASE>>2) + index);
-	/* pr_debug("%s index=%d value=0x%x (%d free)\n", __func__, index, result, result); */
-	return result;
+	return dyplo_reg_read_quick_index(
+		fifo_dev->config_parent->control_base,
+		DYPLO_REG_FIFO_WRITE_LEVEL_BASE,
+		fifo_dev->index);
 }
 
 static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, int thd)
@@ -1364,10 +1372,10 @@ static irqreturn_t dyplo_fifo_isr_v1(struct dyplo_dev *dev, struct dyplo_config_
 {
 	int index;
 	struct dyplo_fifo_control_dev *fifo_ctl_dev = cfg_dev->private_data;
-	u32 write_status_reg = ioread32_quick(
-		cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_STATUS>>2));
-	u32 read_status_reg = ioread32_quick(
-		cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_STATUS>>2));
+	u32 write_status_reg = dyplo_reg_read_quick(
+		cfg_dev->control_base, DYPLO_REG_FIFO_WRITE_IRQ_STATUS);
+	u32 read_status_reg = dyplo_reg_read_quick(
+		cfg_dev->control_base, DYPLO_REG_FIFO_READ_IRQ_STATUS);
 
 	/* Allow IRQ sharing */
 	if (!write_status_reg && !read_status_reg)
@@ -1401,8 +1409,8 @@ static irqreturn_t dyplo_fifo_isr_v1(struct dyplo_dev *dev, struct dyplo_config_
 static irqreturn_t dyplo_fifo_isr_v2(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
 {
 	struct dyplo_fifo_control_dev *fifo_ctl_dev = cfg_dev->private_data;
-	u32 status_reg = ioread32_quick(
-		cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2));
+	u32 status_reg = dyplo_reg_read_quick(
+		cfg_dev->control_base, DYPLO_REG_FIFO_IRQ_STATUS);
 	u16 read_status_reg;
 	u16 write_status_reg;
 	u8 index;
@@ -1475,7 +1483,7 @@ static void dyplo_dma_common_set_standalone_mode(struct dyplo_dma_dev *dma_dev, 
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	u32 reg;
 	
-	reg = ioread32_quick(control_base + (DYPLO_DMA_STANDALONE_CONTROL>>2));
+	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_STANDALONE_CONTROL);
 	if (!!(reg & BIT(0)) == !!standalone)
 		return; /* Already in that mode */
 	dyplo_dma_to_logic_enable(control_base, false);
@@ -1497,7 +1505,7 @@ static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 
 	pr_debug("%s\n", __func__);
 
-	reg = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
+	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_CONTROL);
 	if (reg & BIT(1)) {
 		pr_err("%s: Reset already in progress\n", __func__);
 		return -EBUSY;
@@ -1509,7 +1517,7 @@ static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 	/* Send reset command */
 	iowrite32_quick(reg, control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
 	for(;;) {
-		if ((ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) & BIT(1)) == 0) {
+		if ((dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_CONTROL) & BIT(1)) == 0) {
 			result = 0;
 			break;
 		}
@@ -1543,7 +1551,7 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 
 	pr_debug("%s\n", __func__);
 
-	reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
+	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_CONTROL);
 	if (reg & BIT(1)) {
 		pr_err("%s: Reset already in progress\n", __func__);
 		return -EBUSY;
@@ -1555,7 +1563,7 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	/* Send reset command */
 	iowrite32_quick(BIT(1)|BIT(0), control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
 	for(;;) {
-		if ((ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) & BIT(1)) == 0) {
+		if ((dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_CONTROL) & BIT(1)) == 0) {
 			result = 0;
 			break;
 		}
@@ -1566,8 +1574,8 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 		if (schedule_timeout(HZ) == 0) {
 			pr_err("%s: TIMEOUT waiting for reset complete IRQ ctrl=%#x ists=%#x\n",
 				__func__,
-				ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)),
-				ioread32_quick(control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2)));
+				dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_CONTROL),
+				dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_STATUS));
 			result = -ETIMEDOUT;
 			break;
 		}
@@ -1678,7 +1686,7 @@ static int dyplo_dma_from_logic_release(struct inode *inode, struct file *filp)
 static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-	u32 status = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+	u32 status = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
 	/* Status: bits 24..31: #results; 16..23: available to execute */
 	u8 num_results;
 
@@ -1686,7 +1694,7 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 	for (num_results = (status >> 24); num_results != 0; --num_results) {
 		/* Fetch result from queue */
 		struct dyplo_dma_to_logic_operation op;
-		u32 addr = ioread32(control_base + (DYPLO_DMA_TOLOGIC_RESULT_ADDR>>2));
+		u32 addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR);
 		if (unlikely(!kfifo_get(&dma_dev->dma_to_logic_wip, &op))) {
 			pr_err("Nothing in fifo of DMA node %u but still %u results\n",
 				dyplo_dma_get_index(dma_dev), num_results);
@@ -1709,7 +1717,7 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 				pr_err("Internal entry: %#x (size %d)\n", (u32)op.addr, op.size);
 			}
 			while (num_results) {
-				addr = ioread32(control_base + (DYPLO_DMA_TOLOGIC_RESULT_ADDR>>2));
+				addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR);
 				pr_err("Logic result: %#x\n", addr);
 				--num_results;
 			}
@@ -1808,7 +1816,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 		for(;;) {
 			if (is_blocking)
 				prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
-			if (ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2)) & 0xFF0000)
+			if (dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS) & 0xFF0000)
 				break; /* There is room in the command buffer */
 			if (signal_pending(current))
 				goto error_interrupted;
@@ -1869,7 +1877,7 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 	u32 status_reg;
 	u8 num_free_entries;
 
-	status_reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+	status_reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
 	pr_debug("%s status=%#x\n", __func__, status_reg);
 	num_free_entries = (status_reg >> 16) & 0xFF;
 
@@ -1918,11 +1926,11 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 		while (current_op->size == 0) {
 			/* Fetch a new operation from logic */
 			if (results_avail) {
-				dma_addr_t start_addr = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_ADDR>>2));
+				dma_addr_t start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR);
 				unsigned int tail = start_addr - dma_dev->dma_from_logic_handle;
 				current_op->addr = ((char*)dma_dev->dma_from_logic_memory) + tail;
-				current_op->user_signal = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_USERBITS>>2));
-				current_op->size = ioread32(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE>>2));
+				current_op->user_signal = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_USERBITS);
+				current_op->size = dyplo_reg_read(control_base, DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE);
 				current_op->short_transfer = (current_op->size != dma_dev->dma_from_logic_block_size);
 				tail += dma_dev->dma_from_logic_block_size;
 				if (tail == dma_dev->dma_from_logic_memory_size)
@@ -2013,7 +2021,7 @@ static unsigned int dyplo_dma_to_logic_poll(struct file *filp, poll_table *wait)
 	if (dma_dev->dma_to_logic_blocks.blocks) {
 		/* Writable when not all blocks have been submitted, or when
 		 * results are available and can be dequeued */
-		avail = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+		avail = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
 		if ((avail & 0xFF000000) == 0) {
 			/* No results yet, see if there are blocks available */
 			avail = ((avail >> 16) & 0xFF) + dma_dev->dma_to_logic_blocks.count - DMA_MAX_NUMBER_OF_COMMANDS;
@@ -2039,7 +2047,7 @@ static unsigned int dyplo_dma_from_logic_poll(struct file *filp, poll_table *wai
 	poll_wait(filp, &dma_dev->wait_queue_from_logic, wait);
 
 	if (dma_dev->dma_from_logic_blocks.blocks) {
-		avail = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+		avail = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
 		pr_debug("%s(status=%#x)\n", __func__, avail);
 		avail &= 0xFF000000;
 	} else {
@@ -2341,7 +2349,7 @@ static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 			block->phys_addr, block->data.bytes_used, DMA_TO_DEVICE);
 
 	/* This operation never blocks, unless something is wrong in HW */
-	if (!(ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2)) & 0xFF0000))
+	if (!(dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS) & 0xFF0000))
 		return -EWOULDBLOCK;
 	pr_debug("%s sending addr=%#x size=%u\n", __func__,
 			(unsigned int)block->phys_addr, block->data.bytes_used);
@@ -2379,7 +2387,7 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 		DEFINE_WAIT(wait);
 		for (;;) {
 			prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
-			status = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+			status = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
 			if (status & 0xFF000000)
 				break; /* Results available, done waiting */
 			if (signal_pending(current)) {
@@ -2392,11 +2400,11 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 		}
 		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 	} else {
-		status = ioread32_quick(control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+		status = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS);
 		if ((status & 0xFF000000) == 0)
 			return -EAGAIN;
 	}
-	start_addr = ioread32(control_base + (DYPLO_DMA_TOLOGIC_RESULT_ADDR>>2));
+	start_addr = dyplo_reg_read(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR);
 	if (start_addr != block->phys_addr) {
 		pr_err("%s Expected addr %#x result %#x\n", __func__, (u32)block->phys_addr, (u32)start_addr);
 		return -EIO;
@@ -2623,7 +2631,7 @@ static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsign
 		case DYPLO_IOC_RESET_FIFO_READ:
 			return dyplo_dma_to_logic_reset(dma_dev);
 		case DYPLO_IOC_USERSIGNAL_QUERY:
-			return ioread32_quick(dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
+			return dyplo_reg_read_quick(dma_dev->config_parent->control_base, DYPLO_DMA_TOLOGIC_USERBITS);
 		case DYPLO_IOC_USERSIGNAL_TELL:
 			iowrite32_quick(arg, dma_dev->config_parent->control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 			return 0;
@@ -2757,7 +2765,7 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 
 	/* Should not block here because we never allocate more blocks than
 	 * what fits in the hardware queue. */
-	status_reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+	status_reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
 	pr_debug("%s status=%#x\n", __func__, status_reg);
 	if (!(status_reg & 0xFF0000))
 		return -EWOULDBLOCK;
@@ -2799,7 +2807,7 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 	for(;;) {
 		if (is_blocking)
 			prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
-		status_reg = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+		status_reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_STATUS);
 		pr_debug("%s status=%#x\n", __func__, status_reg);
 		/* TODO: Blocking */
 		if (status_reg & 0xFF000000)
@@ -2818,13 +2826,13 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 	if (is_blocking)
 		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 
-	start_addr = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_ADDR>>2));
+	start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR);
 	if (start_addr != block->phys_addr) {
 		pr_err("%s Expected addr %#x result %#x\n", __func__, (u32)block->phys_addr, (u32)start_addr);
 		return -EIO;
 	}
-	block->data.user_signal = ioread32_quick(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_USERBITS>>2));
-	block->data.bytes_used = ioread32(control_base + (DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE>>2));
+	block->data.user_signal = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_USERBITS);
+	block->data.bytes_used = dyplo_reg_read(control_base, DYPLO_DMA_FROMLOGIC_RESULT_BYTESIZE);
 	block->data.state = 0;
 
 	if (dma_dev->dma_from_logic_blocks.flags & DYPLO_DMA_BLOCK_FLAG_STREAMING)
@@ -2985,8 +2993,8 @@ static const struct file_operations dyplo_dma_fops =
 static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
 {
 	struct dyplo_dma_dev *dma_dev = cfg_dev->private_data;
-	u32 status = ioread32_quick(
-		cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2));
+	u32 status = dyplo_reg_read_quick(
+		cfg_dev->control_base, DYPLO_REG_FIFO_IRQ_STATUS);
 	pr_debug("%s(status=%#x)\n", __func__, status);
 	if (!status)
 		return IRQ_NONE;
@@ -2996,11 +3004,11 @@ static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev 
 	/* Clear the reset command when done */
 	if (status & BIT(15))
 		iowrite32(
-			ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2)) & ~BIT(1),
+			dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_TOLOGIC_CONTROL) & ~BIT(1),
 			cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2));
 	if (status & BIT(31))
 		iowrite32(
-			ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2)) & ~BIT(1),
+			dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_FROMLOGIC_CONTROL) & ~BIT(1),
 			cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2));
 	/* Wake up the proper queues */
 	if (status & (BIT(0) | BIT(15)))
@@ -3013,8 +3021,8 @@ static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev 
 /* Interrupt service routine for generic nodes (clear RESET command) */
 static irqreturn_t dyplo_generic_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
 {
-	u32 status = ioread32_quick(
-		cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2));
+	u32 status = dyplo_reg_read_quick(
+		cfg_dev->control_base, DYPLO_REG_FIFO_IRQ_STATUS);
 	pr_debug("%s(status=%#x)\n", __func__, status);
 	if (!status)
 		return IRQ_NONE;
@@ -3035,7 +3043,7 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	int index = 0;
 	irqreturn_t result = IRQ_NONE;
 
-	mask = ioread32_quick(dev->base + (DYPLO_REG_CONTROL_IRQ_MASK>>2));
+	mask = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_IRQ_MASK);
 	pr_debug("%s(mask=0x%x)\n", __func__, mask);
 	while (mask) {
 		mask >>= 1; /* CPU node is '0', ctl doesn't need interrupt */
@@ -3330,11 +3338,11 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		return;
 	}
 
-	irq_w_mask = ioread32_quick(control_base + (DYPLO_REG_FIFO_IRQ_MASK>>2));
-	irq_w_status = ioread32_quick(control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2));
+	irq_w_mask = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_MASK);
+	irq_w_status = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_STATUS);
 	if (cfg_dev->isr == dyplo_fifo_isr_v1) {
-		irq_r_mask = ioread32_quick(control_base + (DYPLO_REG_FIFO_READ_IRQ_MASK>>2));
-		irq_r_status = ioread32_quick(control_base + (DYPLO_REG_FIFO_READ_IRQ_STATUS>>2));
+		irq_r_mask = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_READ_IRQ_MASK);
+		irq_r_status = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_READ_IRQ_STATUS);
 	} else {
 		irq_r_mask = irq_w_mask >> 16;
 		irq_w_mask &= 0xFFFF;
@@ -3394,10 +3402,10 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 		return;
 	}
 
-	status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_STANDALONE_CONTROL>>2));
+	status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_STANDALONE_CONTROL);
 	if (status & BIT(0)) {
 		seq_printf(m, "  STANDALONE: nb=%u ", (status >> 8) & 0xFF);
-		status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_STANDALONE_BLOCKSIZE>>2));
+		status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_STANDALONE_BLOCKSIZE);
 		seq_printf(m, "bs=%u\n", status);
 	} else {
 		seq_printf(m, "  CPU to PL (%c):",
@@ -3412,7 +3420,7 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 				dma_dev->dma_to_logic_memory_size,
 				dma_dev->dma_to_logic_head,
 				dma_dev->dma_to_logic_tail);
-		status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_TOLOGIC_STATUS>>2));
+		status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_TOLOGIC_STATUS);
 		seq_printf(m, " re=%u fr=%u idle=%c\n",
 			status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 
@@ -3429,7 +3437,7 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 				dma_dev->dma_from_logic_head,
 				dma_dev->dma_from_logic_tail,
 				dma_dev->dma_from_logic_full ? 'Y':'N');
-		status = ioread32_quick(cfg_dev->control_base + (DYPLO_DMA_FROMLOGIC_STATUS>>2));
+		status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_FROMLOGIC_STATUS);
 		seq_printf(m, " re=%u fr=%u idle=%c\n",
 			status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 	}
@@ -3538,7 +3546,7 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 	sema_init(&dev->fop_sem, 1);
 	dev->device = device;
 
-	control_id = ioread32_quick(dev->base + (DYPLO_REG_ID>>2));
+	control_id = dyplo_reg_read_quick(dev->base, DYPLO_REG_ID);
 	if ((control_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) !=
 			DYPLO_REG_ID_PRODUCT_TOPIC_CONTROL)
 	{
@@ -3546,7 +3554,7 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		return -EINVAL;
 	}
 
-	dyplo_version = ioread32_quick(dev->base + (DYPLO_REG_CONTROL_DYPLO_VERSION>>2));
+	dyplo_version = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
 	dev_info(device, "Dyplo version %d.%d.%d\n",
 		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF, dyplo_version & 0xFF);
 	if (dyplo_version >= 0x7DE0403)
@@ -3561,10 +3569,10 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		dev_warn(device, "Failed to set DMA mask: %d", retval);
 
 	dev->number_of_config_devices =
-		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_CPU_NODES_COUNT>>2)) +
-		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_IO_NODES_COUNT>>2)) +
-		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_PR_NODES_COUNT>>2)) +
-		ioread32_quick(dev->base + (DYPLO_REG_CONTROL_FIXED_NODES_COUNT>>2));
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_CPU_NODES_COUNT) +
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_IO_NODES_COUNT) +
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_PR_NODES_COUNT) +
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_FIXED_NODES_COUNT);
 
 	dev->config_devices = devm_kcalloc(device,
 		dev->number_of_config_devices, sizeof(struct dyplo_config_dev),

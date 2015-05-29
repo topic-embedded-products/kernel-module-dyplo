@@ -3010,6 +3010,24 @@ static irqreturn_t dyplo_dma_isr(struct dyplo_dev *dev, struct dyplo_config_dev 
 	return IRQ_HANDLED;
 }
 
+/* Interrupt service routine for generic nodes (clear RESET command) */
+static irqreturn_t dyplo_generic_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
+{
+	u32 status = ioread32_quick(
+		cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_STATUS>>2));
+	pr_debug("%s(status=%#x)\n", __func__, status);
+	if (!status)
+		return IRQ_NONE;
+	/* Acknowledge IRQ */
+	iowrite32_quick(status,
+			cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_CLR>>2));
+	/* Clear the reset command when done */
+	if (status & BIT(0))
+		iowrite32(0, cfg_dev->control_base + (DYPLO_REG_FIFO_RESET_WRITE>>2));
+	/* TODO: Wake up whomever triggered the reset */
+	return IRQ_HANDLED;
+}
+
 static irqreturn_t dyplo_isr(int irq, void *dev_id)
 {
 	struct dyplo_dev *dev = (struct dyplo_dev*)dev_id;
@@ -3277,6 +3295,7 @@ static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
 		case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
 			return create_sub_devices_dma_fifo(cfg_dev, sub_device_id);
 		default:
+			cfg_dev->isr = dyplo_generic_isr;
 			return 0; /* No subdevice needed */
 	}
 }

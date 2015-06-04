@@ -1478,20 +1478,31 @@ static void dyplo_dma_to_logic_enable(u32 __iomem *control_base, bool value)
 	dyplo_set_bits(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2), BIT(0), value);
 }
 
+static bool dyplo_dma_common_is_standalone_mode(struct dyplo_dma_dev *dma_dev)
+{
+	return !!(dyplo_reg_read_quick(dma_dev->config_parent->control_base,
+			DYPLO_DMA_STANDALONE_CONTROL) && BIT(0));
+}
+
+static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev);
+static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev);
+
 static void dyplo_dma_common_set_standalone_mode(struct dyplo_dma_dev *dma_dev, bool standalone)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-	u32 reg;
 	
-	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_STANDALONE_CONTROL);
-	if (!!(reg & BIT(0)) == !!standalone)
+	if (dyplo_dma_common_is_standalone_mode(dma_dev) == standalone)
 		return; /* Already in that mode */
+	pr_debug("%s: Switching to %s mode\n", __func__,
+		standalone ? "standalone" : "normal");
 	dyplo_dma_to_logic_enable(control_base, false);
 	dyplo_dma_from_logic_enable(control_base, false);
 	iowrite32(standalone ? BIT(0) : 0, control_base + (DYPLO_DMA_STANDALONE_CONTROL>>2));
 	if (!standalone) {
 		dyplo_dma_to_logic_enable(control_base, true);
+		dyplo_dma_to_logic_reset(dma_dev);
 		dyplo_dma_from_logic_enable(control_base, true);
+		dyplo_dma_from_logic_reset(dma_dev);
 	}
 }
 
@@ -1503,12 +1514,15 @@ static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 	int result;
 	DEFINE_WAIT(wait);
 
-	pr_debug("%s\n", __func__);
-
 	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_CONTROL);
+	pr_debug("%s ctl=%#x\n", __func__, reg);
 	if (reg & BIT(1)) {
 		pr_err("%s: Reset already in progress\n", __func__);
 		return -EBUSY;
+	}
+	if (!(reg & BIT(0))) {
+		pr_debug("%s: DMA hardware not running\n", __func__);
+		return -EINVAL;
 	}
 	reg |= BIT(1);
 	prepare_to_wait(&dma_dev->wait_queue_to_logic, &wait, TASK_INTERRUPTIBLE);
@@ -1549,12 +1563,16 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	int result;
 	DEFINE_WAIT(wait);
 
-	pr_debug("%s\n", __func__);
 
 	reg = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_CONTROL);
+	pr_debug("%s ctl=%#x\n", __func__, reg);
 	if (reg & BIT(1)) {
 		pr_err("%s: Reset already in progress\n", __func__);
 		return -EBUSY;
+	}
+	if (!(reg & BIT(0))) {
+		pr_debug("%s: DMA hardware not running\n", __func__);
+		return -EINVAL;
 	}
 	reg |= BIT(1);
 	prepare_to_wait(&dma_dev->wait_queue_from_logic, &wait, TASK_INTERRUPTIBLE);
@@ -1973,7 +1991,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 			bytes_to_copy = current_op->size;
 			if (bytes_to_copy > count)
 				bytes_to_copy = count;
-			pr_debug("%s: copy_to_user %p (%u)\n", __func__, current_op->addr, bytes_to_copy);
+			/* pr_debug("%s: copy_to_user %p (%u)\n", __func__, current_op->addr, bytes_to_copy); */
 			if (unlikely(__copy_to_user(buf, current_op->addr, bytes_to_copy))) {
 				status = -EFAULT;
 				goto error_exit;
@@ -2138,7 +2156,8 @@ static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
 static int dyplo_dma_to_logic_block_free(struct dyplo_dma_dev *dma_dev)
 {
 	/* Reset the device to release all resources */
-	dyplo_dma_to_logic_reset(dma_dev);
+	if (!dyplo_dma_common_is_standalone_mode(dma_dev))
+		dyplo_dma_to_logic_reset(dma_dev);
 	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 }
 
@@ -2270,7 +2289,7 @@ static int dyplo_dma_standalone_block_alloc(struct dyplo_dma_dev *dma_dev,
 	request.size = size * count;
 	request.count = 1;
 	ret = dyplo_dma_common_block_alloc(dma_dev, &request, &dma_dev->dma_to_logic_blocks, DMA_BIDIRECTIONAL);
-	if (!ret)
+	if (ret)
 		return ret;
 	/* Configure the DMA node */
 	iowrite32(dma_dev->dma_to_logic_blocks.blocks[0].phys_addr, control_base + (DYPLO_DMA_STANDALONE_STARTADDR>>2));
@@ -2296,7 +2315,7 @@ static int dyplo_dma_to_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
 
 	dyplo_dma_to_logic_block_free(dma_dev);
 	ret = dyplo_dma_common_block_alloc(dma_dev, &r, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
-	if (!ret)
+	if (ret)
 		return ret;
 
 	request.size = r.size;
@@ -2478,6 +2497,9 @@ static int dyplo_dma_to_logic_mmap(struct file *filp, struct vm_area_struct *vma
 		&dma_dev->dma_to_logic_blocks);
 }
 
+/* forward */
+static int dyplo_dma_from_logic_block_free(struct dyplo_dma_dev *dma_dev);
+
 static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 	struct dyplo_dma_configuration_req __user *arg)
 {
@@ -2497,6 +2519,8 @@ static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 			/* Device must be open in special mode */
 			if (!(dma_dev->open_mode & FMODE_EXCL))
 				return -EACCES;
+			/* Clean up the "from" side as well */
+			dyplo_dma_from_logic_block_free(dma_dev);
 			dyplo_dma_common_set_standalone_mode(dma_dev, true);
 			ret = dyplo_dma_standalone_block_alloc(dma_dev,
 				request.size, request.count);
@@ -2707,7 +2731,7 @@ static int dyplo_dma_from_logic_block_alloc(struct dyplo_dma_dev *dma_dev,
 	dyplo_dma_from_logic_block_free(dma_dev);
 	ret = dyplo_dma_common_block_alloc(dma_dev, &r,
 		&dma_dev->dma_from_logic_blocks, DMA_FROM_DEVICE);
-	if (!ret)
+	if (ret)
 		return ret;
 
 	request.size = r.size;

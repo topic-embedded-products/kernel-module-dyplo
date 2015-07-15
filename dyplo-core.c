@@ -3533,11 +3533,12 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 	}
 	seq_printf(m, "Backplane counters:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		seq_printf(m, " %d", dev->base[(DYPLO_REG_BACKPLANE_COUNTER_BASE/4) + i]);
+		seq_printf(m, " %d", dyplo_reg_read_quick_index(
+			dev->base, DYPLO_REG_BACKPLANE_COUNTER_BASE, i));
 	seq_printf(m, "\nAXI overhead: %d, Stream in: %d, Stream out: %d\n",
-		dev->base[DYPLO_REG_AXI_COUNTER_BASE/4],
-		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+0],
-		dev->base[(DYPLO_REG_CPU_COUNTER_BASE/4)+1]);
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_AXI_COUNTER_BASE),
+		dyplo_reg_read_quick_index(dev->base, DYPLO_REG_CPU_COUNTER_BASE, 0),
+		dyplo_reg_read_quick_index(dev->base, DYPLO_REG_CPU_COUNTER_BASE, 1));
 
 	if (!dev->base[DYPLO_REG_CONTROL_LICENSE_VALID/4])
 		seq_printf(m, "WARNING: License expired!\n");
@@ -3686,8 +3687,8 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		dev_err(device, "unable to create proc entry\n");
 
 	/* And finally, enable the backplane */
-	*(dev->base + (DYPLO_REG_BACKPLANE_ENABLE_SET>>2)) =
-		(2 << dev->number_of_config_devices) - 1;
+	dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_SET,
+		(2 << dev->number_of_config_devices) - 1);
 
 	return 0;
 

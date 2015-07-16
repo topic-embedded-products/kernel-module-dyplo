@@ -504,6 +504,33 @@ static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 	return 0;
 }
 
+static long dyplo_ctl_license_key(struct dyplo_dev *dev, unsigned int cmd, void __user *user_key)
+{
+	int status;
+	u32 key[2];
+
+	if (_IOC_SIZE(cmd) != sizeof(key))
+		return -EINVAL;
+
+	if (_IOC_DIR(cmd) & _IOC_WRITE) {
+		/* Already checked memory with access_ok */
+		status = __copy_from_user(key, user_key, sizeof(key));
+		if (status)
+			return status;
+		dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY0, key[0]);
+		dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY1, key[1]);
+	}
+	if (_IOC_DIR(cmd) & _IOC_READ) {
+		key[0] = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY0);
+		key[1] = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY1);
+		status = __copy_to_user(user_key, key, sizeof(key));
+		if (status)
+			return status;
+	}
+	return 0;
+}
+
+
 static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
 {
 	int status;
@@ -554,6 +581,9 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 		case DYPLO_IOC_BACKPLANE_DISABLE:
 			dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_CLR, arg << 1);
 			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+			break;
+		case DYPLO_IOC_LICENSE_KEY:
+			status = dyplo_ctl_license_key(dev, cmd, (void __user *)arg);
 			break;
 		default:
 			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);

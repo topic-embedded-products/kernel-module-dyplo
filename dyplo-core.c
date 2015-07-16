@@ -206,17 +206,21 @@ static unsigned int dyplo_get_config_index(const struct dyplo_config_dev *cfg_de
 	return (((char*)cfg_dev->base - (char*)cfg_dev->parent->base) / DYPLO_CONFIG_SIZE) - 1;
 }
 
-static u32 dyplo_cfg_get_id(const struct dyplo_config_dev *cfg_dev)
+static u32 dyplo_cfg_get_version_id(const struct dyplo_config_dev *cfg_dev)
 {
-	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_ID);
+	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_VERSION_ID);
 }
-static int dyplo_number_of_input_queues(const struct dyplo_config_dev *cfg_dev)
+static u8 dyplo_cfg_get_node_type(const struct dyplo_config_dev *cfg_dev)
 {
-	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_FIFO_FROM_BACKPLANE_COUNT);
+	return (dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_TYPE_ID) >> 8) & 0xFF;
 }
-static int dyplo_number_of_output_queues(const struct dyplo_config_dev *cfg_dev)
+static u8 dyplo_number_of_input_queues(const struct dyplo_config_dev *cfg_dev)
 {
-	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_FIFO_TO_BACKPLANE_COUNT);
+	return dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_NODE_INFO) & 0x0F;
+}
+static u8 dyplo_number_of_output_queues(const struct dyplo_config_dev *cfg_dev)
+{
+	return (dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_NODE_INFO) >> 4) & 0x0F;
 }
 
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
@@ -347,16 +351,18 @@ static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
 	{
 		const int number_of_fifos =
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
-		int __iomem *ctl_route_base_out =
-			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		int __iomem *ctl_route_base = dev->base +
+			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 		{
-			if (ioread32_quick(ctl_route_base_out + queue_index) == route) {
+			if (ioread32_quick(ctl_route_base + queue_index) == route) {
 				pr_debug("removed route %d,%d->%d,%d\n",
 					ctl_index, queue_index,
-					(route >> dev->stream_id_width) - 1,
-					route & ((0x1 << dev->stream_id_width) - 1));
-				iowrite32_quick(0, ctl_route_base_out + queue_index);
+					(route >> DYPLO_STREAM_ID_WIDTH) - 1,
+					route & ((0x1 << DYPLO_STREAM_ID_WIDTH) - 1));
+				iowrite32_quick(0, ctl_route_base + queue_index);
 			}
 		}
 	}
@@ -364,7 +370,7 @@ static void dyplo_ctl_route_remove_dst(struct dyplo_dev *dev, u32 route)
 
 static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t route)
 {
-	int __iomem* dst_control_addr;
+	u32 __iomem* dst_control_addr;
 	u32 dst_route;
 
 	pr_debug("%s %d,%d->%d,%d\n", __func__,
@@ -375,13 +381,13 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 		pr_debug("%s: Invalid source or destination\n", __func__);
 	    return -EINVAL;
 	}
-	dst_route = ((route.dstNode + 1) << dev->stream_id_width) | route.dstFifo;
+	dst_route = ((route.dstNode + 1) << DYPLO_STREAM_ID_WIDTH) | route.dstFifo;
 	dyplo_ctl_route_remove_dst(dev, dst_route);
 	/* Setup route. The PL assumes that "0" is the control node, hence
 	 * the "+1" in config node indices */
-	dst_control_addr =
-		dev->config_devices[route.srcNode].control_base +
-		(DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2) +
+	dst_control_addr = dev->base +
+		(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
+		(route.srcNode << DYPLO_STREAM_ID_WIDTH) +
 		route.srcFifo;
 	pr_debug("%s (%d) @ %p: %x\n", __func__, route.srcNode,
 		dst_control_addr, dst_route);
@@ -420,8 +426,9 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 		return -EFAULT;
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
 	{
-		int __iomem *ctl_route_base =
-			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		u32 __iomem *ctl_route_base = dev->base +
+			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DYPLO_STREAM_ID_WIDTH);
 		const int number_of_fifos =
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
@@ -429,10 +436,10 @@ static int dyplo_ctl_route_get_from_user(struct dyplo_dev *dev, struct dyplo_rou
 			u32 route = ioread32_quick(ctl_route_base + queue_index);
 			if (route)
 			{
-				int src_ctl_index = route >> dev->stream_id_width;
+				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & ( (0x1 << dev->stream_id_width) - 1);
+					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
 					if (nr >= routes.n_routes)
 						return nr; /* No room for more, quit */
 					route = (ctl_index << 24) | (queue_index << 16) | ((src_ctl_index-1) << 8) | (src_index);
@@ -452,36 +459,38 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 {
 	int queue_index;
 	int ctl_index;
-	const int match = (ctl_index_to_delete + 1) << dev->stream_id_width;
+	const int match = (ctl_index_to_delete + 1) << DYPLO_STREAM_ID_WIDTH;
 	const int number_of_fifos =
 		dyplo_number_of_output_queues(&dev->config_devices[ctl_index_to_delete]);
-	int __iomem *ctl_route_base_out =
-		dev->config_devices[ctl_index_to_delete].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+	u32 __iomem *ctl_route_base = dev->base +
+		(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
+		(ctl_index_to_delete << DYPLO_STREAM_ID_WIDTH);
 
+	/* Erase outgoing routes */
 	for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
-		iowrite32_quick(0, ctl_route_base_out + queue_index);
-	for (ctl_index = 0; ctl_index < ctl_index_to_delete; ++ctl_index)
-	{
+		iowrite32_quick(0, ctl_route_base + queue_index);
+
+	/* Erase incoming routes */
+	for (ctl_index = 0; ctl_index < ctl_index_to_delete; ++ctl_index) {
 		const int number_of_fifos =
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
-		int __iomem *ctl_route_base_out =
-			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
-		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
-		{
-			if ((ioread32_quick(ctl_route_base_out + queue_index) & (0xFFFF << dev->stream_id_width) ) == match)
-				iowrite32_quick(0, ctl_route_base_out + queue_index);
+		ctl_route_base = dev->base +
+			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index) {
+			if ((ioread32_quick(ctl_route_base + queue_index) & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match)
+				iowrite32_quick(0, ctl_route_base + queue_index);
 		}
 	}
-	for (ctl_index = ctl_index_to_delete+1; ctl_index < dev->number_of_config_devices; ++ctl_index)
-	{
+	for (ctl_index = ctl_index_to_delete+1; ctl_index < dev->number_of_config_devices; ++ctl_index) {
 		const int number_of_fifos =
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
-		int __iomem *ctl_route_base_out =
-			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
-		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
-		{
-			if ((ioread32_quick(ctl_route_base_out + queue_index) & (0xFFFF << dev->stream_id_width) ) == match)
-				iowrite32_quick(0, ctl_route_base_out + queue_index);
+		ctl_route_base = dev->base +
+			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DYPLO_STREAM_ID_WIDTH);
+		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index) {
+			if ((ioread32_quick(ctl_route_base + queue_index) & (0xFFFF << DYPLO_STREAM_ID_WIDTH) ) == match)
+				iowrite32_quick(0, ctl_route_base + queue_index);
 		}
 	}
 	return 0;
@@ -492,14 +501,14 @@ static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 	int ctl_index;
 	int queue_index;
 
+	u32 __iomem *ctl_route_base = dev->base + (DYPLO_REG_CONTROL_ROUTE_TABLE>>2);
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)	{
 		/* Remove outgoing routes */
 		const int number_of_fifos =
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
-		int __iomem *ctl_route_base = 
-			dev->config_devices[ctl_index].control_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 			iowrite32_quick(0, ctl_route_base + queue_index);
+		ctl_route_base += 4;
 	}
 	return 0;
 }
@@ -796,11 +805,11 @@ static long dyplo_cfg_ioctl(struct file *filp, unsigned int cmd, unsigned long a
 			}
 			break;
 		case DYPLO_IOC_RESET_FIFO_WRITE:
-			iowrite32_quick(arg, (cfg_dev->control_base + (DYPLO_REG_FIFO_RESET_WRITE/4)));
+			dyplo_reg_write_quick(cfg_dev->control_base, DYPLO_REG_NODE_RESET_FIFOS, arg);
 			status = 0;
 			break;
 		case DYPLO_IOC_RESET_FIFO_READ:
-			iowrite32_quick(arg, (cfg_dev->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
+			dyplo_reg_write_quick(cfg_dev->control_base, DYPLO_REG_FIFO_RESET_READ, arg);
 			status = 0;
 			break;
 		default:
@@ -825,7 +834,6 @@ static const struct file_operations dyplo_cfg_fops =
 };
 
 /* Utilities for fifo functions */
-static irqreturn_t dyplo_fifo_isr_v1(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev);
 
 static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
 {
@@ -836,7 +844,7 @@ static int __iomem * dyplo_fifo_memory_location(struct dyplo_fifo_dev *fifo_dev)
 
 static bool dyplo_fifo_write_usersignal(struct dyplo_fifo_dev *fifo_dev, u16 user_signal)
 {
-	__iomem int *control_base_us =
+	__iomem u32 *control_base_us =
 		fifo_dev->config_parent->control_base +
 		(DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) +
 		fifo_dev->index;
@@ -863,16 +871,9 @@ static void dyplo_fifo_read_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, in
 	else if (thd)
 		--thd; /* Treshold of "15" will alert when 16 words are present in the FIFO */
 	iowrite32(thd, control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + index);
-	if (fifo_dev->config_parent->isr == dyplo_fifo_isr_v1) {
-		/* v1 of IRQ logic uses separate R/W registers, this should be
-		 * removed once the v1 logic is no longer in use. */
-		pr_debug("%s index=%d thd=%d v1\n", __func__, index, thd);
-		iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_READ_IRQ_SET>>2));
-	} else {
-		/* v2 uses upper 16 bits of shared IRQ registers */
-		pr_debug("%s index=%d thd=%d v2\n", __func__, index, thd);
-		iowrite32(BIT(index + 16), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
-	}
+	/* v2 uses upper 16 bits of shared IRQ registers */
+	pr_debug("%s index=%d thd=%d v2\n", __func__, index, thd);
+	iowrite32(BIT(index + 16), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
 }
 
 static int dyplo_fifo_read_open(struct inode *inode, struct file *filp)
@@ -1133,9 +1134,11 @@ static long dyplo_fifo_rw_ioctl(struct file *filp, unsigned int cmd, unsigned lo
 		case DYPLO_IOC_RESET_FIFO_WRITE:
 		case DYPLO_IOC_RESET_FIFO_READ:
 			if ((filp->f_mode & FMODE_WRITE) != 0)
-				iowrite32_quick(1 << fifo_dev->index, (fifo_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_WRITE/4)));
+				dyplo_reg_write_quick(fifo_dev->config_parent->control_base,
+					DYPLO_REG_FIFO_RESET_WRITE, 1 << fifo_dev->index);
 			else
-				iowrite32_quick(1 << fifo_dev->index, (fifo_dev->config_parent->control_base + (DYPLO_REG_FIFO_RESET_READ/4)));
+				dyplo_reg_write_quick(fifo_dev->config_parent->control_base,
+					DYPLO_REG_FIFO_RESET_READ, 1 << fifo_dev->index);
 			return 0;
 		case DYPLO_IOC_USERSIGNAL_QUERY:
 			/* TODO: Return LAST usersignal, not next */
@@ -1186,7 +1189,7 @@ static void dyplo_fifo_write_enable_interrupt(struct dyplo_fifo_dev *fifo_dev, i
 		--thd; /* IRQ will trigger when level is above thd */
 	pr_debug("%s index=%d thd=%d\n", __func__, index, thd);
 	iowrite32(thd, control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + index);
-	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_WRITE_IRQ_SET>>2));
+	iowrite32(BIT(index), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
 }
 
 static int dyplo_fifo_write_open(struct inode *inode, struct file *filp)
@@ -1397,46 +1400,8 @@ static const struct file_operations dyplo_fifo_write_fops =
 };
 
 
-/* Interrupt service routine for CPU fifo node, version 1 */
-static irqreturn_t dyplo_fifo_isr_v1(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
-{
-	int index;
-	struct dyplo_fifo_control_dev *fifo_ctl_dev = cfg_dev->private_data;
-	u32 write_status_reg = dyplo_reg_read_quick(
-		cfg_dev->control_base, DYPLO_REG_FIFO_WRITE_IRQ_STATUS);
-	u32 read_status_reg = dyplo_reg_read_quick(
-		cfg_dev->control_base, DYPLO_REG_FIFO_READ_IRQ_STATUS);
-
-	/* Allow IRQ sharing */
-	if (!write_status_reg && !read_status_reg)
-		return IRQ_NONE;
-	/* Acknowledge the interrupt by clearing all flags that we've seen */
-	if (write_status_reg)
-		iowrite32_quick(write_status_reg,
-			cfg_dev->control_base + (DYPLO_REG_FIFO_WRITE_IRQ_CLR>>2));
-	if (read_status_reg)
-		iowrite32_quick(read_status_reg,
-			cfg_dev->control_base + (DYPLO_REG_FIFO_READ_IRQ_CLR>>2));
-	pr_debug("%s(status=0x%x 0x%x)\n", __func__,
-			write_status_reg, read_status_reg);
-	/* Trigger the associated wait queues, "read" queues first */
-	for (index = 0; (read_status_reg != 0) && (index < fifo_ctl_dev->number_of_fifo_read_devices); ++index)
-	{
-		if (read_status_reg & 1)
-			wake_up_interruptible(&fifo_ctl_dev->fifo_devices[fifo_ctl_dev->number_of_fifo_write_devices + index].fifo_wait_queue);
-		read_status_reg >>= 1;
-	}
-	for (index = 0; (write_status_reg != 0) && (index < fifo_ctl_dev->number_of_fifo_write_devices); ++index)
-	{
-		if (write_status_reg & 1)
-			wake_up_interruptible(&fifo_ctl_dev->fifo_devices[index].fifo_wait_queue);
-		write_status_reg >>= 1;
-	}
-	return IRQ_HANDLED;
-}
-
 /* Interrupt service routine for CPU fifo node, version 2 */
-static irqreturn_t dyplo_fifo_isr_v2(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
+static irqreturn_t dyplo_fifo_isr(struct dyplo_dev *dev, struct dyplo_config_dev *cfg_dev)
 {
 	struct dyplo_fifo_control_dev *fifo_ctl_dev = cfg_dev->private_data;
 	u32 status_reg = dyplo_reg_read_quick(
@@ -1520,7 +1485,7 @@ static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev);
 static void dyplo_dma_common_set_standalone_mode(struct dyplo_dma_dev *dma_dev, bool standalone)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-	
+
 	if (dyplo_dma_common_is_standalone_mode(dma_dev) == standalone)
 		return; /* Already in that mode */
 	pr_debug("%s: Switching to %s mode\n", __func__,
@@ -3081,11 +3046,12 @@ static irqreturn_t dyplo_generic_isr(struct dyplo_dev *dev, struct dyplo_config_
 	if (!status)
 		return IRQ_NONE;
 	/* Acknowledge IRQ */
-	iowrite32_quick(status,
-			cfg_dev->control_base + (DYPLO_REG_FIFO_IRQ_CLR>>2));
+	dyplo_reg_write_quick(cfg_dev->control_base,
+		DYPLO_REG_FIFO_IRQ_CLR, status);
 	/* Clear the reset command when done */
 	if (status & BIT(0))
-		iowrite32(0, cfg_dev->control_base + (DYPLO_REG_FIFO_RESET_WRITE>>2));
+		dyplo_reg_write_quick(cfg_dev->control_base,
+			DYPLO_REG_NODE_RESET_FIFOS, 0);
 	/* TODO: Wake up whomever triggered the reset */
 	return IRQ_HANDLED;
 }
@@ -3111,9 +3077,7 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 	return result;
 }
 
-static int create_sub_devices_cpu_fifo(
-	struct dyplo_config_dev *cfg_dev,
-	u32 sub_device_id)
+static int create_sub_devices_cpu_fifo(struct dyplo_config_dev *cfg_dev)
 {
 	int retval;
 	struct dyplo_fifo_control_dev *fifo_ctl_dev;
@@ -3121,14 +3085,15 @@ static int create_sub_devices_cpu_fifo(
 	struct device *device = dev->device;
 	dev_t first_fifo_devt;
 	int fifo_index = 0;
-	int number_of_write_fifos;
-	int number_of_read_fifos;
-	int i;
 	struct device *char_device;
+	u32 version_id = dyplo_cfg_get_version_id(cfg_dev);
+	u8 i;
+	u8 number_of_write_fifos;
+	u8 number_of_read_fifos;
 
-	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) > 0x0200) {
-		dev_err(device, "Unsupported CPU FIFO node revision: %#x\n",
-			sub_device_id);
+	if ((version_id & DYPLO_VERSION_ID_MASK_REVISION) != 0x0100) {
+		dev_err(device, "Unsupported CPU FIFO node version: %#x\n",
+			version_id);
 		return -EINVAL;
 	}
 
@@ -3178,8 +3143,7 @@ static int create_sub_devices_cpu_fifo(
 		goto error_cdev_r;
 	}
 
-	for (i = 0; i < number_of_write_fifos; ++i)
-	{
+	for (i = 0; i < number_of_write_fifos; ++i) {
 		struct dyplo_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
 		fifo_dev->index = i;
@@ -3195,8 +3159,7 @@ static int create_sub_devices_cpu_fifo(
 		}
 		++fifo_index;
 	}
-	for (i = 0; i < number_of_read_fifos; ++i)
-	{
+	for (i = 0; i < number_of_read_fifos; ++i) {
 		struct dyplo_fifo_dev *fifo_dev = &fifo_ctl_dev->fifo_devices[fifo_index];
 		fifo_dev->config_parent = cfg_dev;
 		fifo_dev->index = i;
@@ -3213,10 +3176,7 @@ static int create_sub_devices_cpu_fifo(
 		++fifo_index;
 	}
 
-	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) >= 0x0200)
-		cfg_dev->isr = dyplo_fifo_isr_v2;
-	else
-		cfg_dev->isr = dyplo_fifo_isr_v1;
+	cfg_dev->isr = dyplo_fifo_isr;
 
 	dev->count_fifo_write_devices += number_of_write_fifos;
 	dev->count_fifo_read_devices += number_of_read_fifos;
@@ -3237,8 +3197,7 @@ error_register_chrdev_region:
 }
 
 static int create_sub_devices_dma_fifo(
-	struct dyplo_config_dev *cfg_dev,
-	u32 sub_device_id)
+	struct dyplo_config_dev *cfg_dev)
 {
 	struct dyplo_dev *dev = cfg_dev->parent;
 	struct device *device = dev->device;
@@ -3246,10 +3205,11 @@ static int create_sub_devices_dma_fifo(
 	dev_t first_fifo_devt;
 	struct dyplo_dma_dev* dma_dev;
 	struct device *char_device;
+	u32 version_id = dyplo_cfg_get_version_id(cfg_dev);
 
-	if ((sub_device_id & DYPLO_REG_ID_MASK_REVISION) > 0x0100) {
+	if ((version_id & DYPLO_VERSION_ID_MASK_REVISION) != 0x0100) {
 		dev_err(device, "Unsupported DMA FIFO node revision: %#x\n",
-			sub_device_id);
+			version_id);
 		return -EINVAL;
 	}
 
@@ -3329,8 +3289,7 @@ error_register_chrdev_region:
 }
 
 static void destroy_sub_devices_dma_fifo(
-	struct dyplo_config_dev *cfg_dev,
-	u32 sub_device_id)
+	struct dyplo_config_dev *cfg_dev)
 {
 	struct dyplo_dma_dev* dma_dev = cfg_dev->private_data;
 	struct device *device = cfg_dev->parent->device;
@@ -3349,13 +3308,11 @@ static void destroy_sub_devices_dma_fifo(
 
 static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
 {
-	u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
-
-	switch (sub_device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) {
-		case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
-			return create_sub_devices_cpu_fifo(cfg_dev, sub_device_id);
-		case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
-			return create_sub_devices_dma_fifo(cfg_dev, sub_device_id);
+	switch (dyplo_cfg_get_node_type(cfg_dev)) {
+		case DYPLO_TYPE_ID_TOPIC_CPU:
+			return create_sub_devices_cpu_fifo(cfg_dev);
+		case DYPLO_TYPE_ID_TOPIC_DMA:
+			return create_sub_devices_dma_fifo(cfg_dev);
 		default:
 			cfg_dev->isr = dyplo_generic_isr;
 			return 0; /* No subdevice needed */
@@ -3364,13 +3321,11 @@ static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
 
 static void destroy_sub_devices(struct dyplo_config_dev *cfg_dev)
 {
-	u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
-
-	switch (sub_device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) {
-		case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
+	switch (dyplo_cfg_get_node_type(cfg_dev)) {
+		case DYPLO_TYPE_ID_TOPIC_CPU:
 			break; /* No particular destroy yet */
-		case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
-			return destroy_sub_devices_dma_fifo(cfg_dev, sub_device_id);
+		case DYPLO_TYPE_ID_TOPIC_DMA:
+			return destroy_sub_devices_dma_fifo(cfg_dev);
 		default:
 			break;
 	}
@@ -3394,15 +3349,11 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 
 	irq_w_mask = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_MASK);
 	irq_w_status = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_IRQ_STATUS);
-	if (cfg_dev->isr == dyplo_fifo_isr_v1) {
-		irq_r_mask = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_READ_IRQ_MASK);
-		irq_r_status = dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_READ_IRQ_STATUS);
-	} else {
-		irq_r_mask = irq_w_mask >> 16;
-		irq_w_mask &= 0xFFFF;
-		irq_r_status = irq_w_status >> 16;
-		irq_w_status &= 0xFFFF;
-	}
+	irq_r_mask = irq_w_mask >> 16;
+	irq_w_mask &= 0xFFFF;
+	irq_r_status = irq_w_status >> 16;
+	irq_w_status &= 0xFFFF;
+
 	number_of_fifo_devices = fifo_dev->number_of_fifo_write_devices;
 	if (fifo_dev->number_of_fifo_read_devices > number_of_fifo_devices)
 		number_of_fifo_devices = fifo_dev->number_of_fifo_read_devices;
@@ -3414,8 +3365,8 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		seq_printf(m, "  fifo=%2d ", i);
 		if (i < fifo_dev->number_of_fifo_write_devices) {
 			int lw = dyplo_fifo_write_level(&fifo_dev->fifo_devices[i]);
-			int tw = *(control_base + (DYPLO_REG_FIFO_WRITE_THD_BASE>>2) + i);
-			int us = *(control_base + (DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE>>2) + i);
+			int tw = dyplo_reg_read_quick_index(control_base, DYPLO_REG_FIFO_WRITE_THD_BASE, i);
+			u32 us = dyplo_reg_read_quick_index(control_base, DYPLO_REG_FIFO_WRITE_USERSIGNAL_BASE, i);
 			seq_printf(m, "%c=%3d %x (%3d%c%c) ",
 				fifo_dev->fifo_devices[i].is_open ? 'W' : 'w',
 				lw, us, tw,
@@ -3429,8 +3380,8 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		}
 		if (i < fifo_dev->number_of_fifo_read_devices) {
 			u32 lr = dyplo_fifo_read_level(&fifo_dev->fifo_devices[fifo_dev->number_of_fifo_write_devices + i]);
-			int tr = *(control_base + (DYPLO_REG_FIFO_READ_THD_BASE>>2) + i);
-			seq_printf(m, "%c=%3d %x (%3d%c%c) ",
+			u32 tr = dyplo_reg_read_quick_index(control_base, DYPLO_REG_FIFO_READ_THD_BASE, i);
+			seq_printf(m, "%c=%3d %x (%3u%c%c) ",
 				fifo_dev->fifo_devices[fifo_dev->number_of_fifo_write_devices + i].is_open ? 'R' : 'r',
 				lr & 0xFFFF, lr >> 16, tr,
 				irq_r_mask & mask ? 'w' : '.',
@@ -3443,6 +3394,9 @@ static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg
 		}
 		seq_printf(m, "total w=%d r=%d\n", tr_w, tr_r);
 	}
+	seq_printf(m, "  Counters: read=%u write=%u\n",
+		dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_READ_COUNT),
+		dyplo_reg_read_quick(control_base, DYPLO_REG_FIFO_WRITE_COUNT));
 }
 
 static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg_dev)
@@ -3519,28 +3473,29 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 		int queue_index;
 		struct dyplo_config_dev *cfg_dev =
 				&dev->config_devices[ctl_index];
-		int __iomem *ctl_base = cfg_dev->control_base;
-		int __iomem *ctl_route_base =
-				ctl_base + (DYPLO_REG_FIFO_WRITE_SOURCE_BASE>>2);
+		u32 __iomem *ctl_route_base = dev->base +
+			(DYPLO_REG_CONTROL_ROUTE_TABLE>>2) +
+			(ctl_index << DYPLO_STREAM_ID_WIDTH);
 		const int number_of_fifos_out =
 				dyplo_number_of_output_queues(cfg_dev);
 		const int number_of_fifos_in =
 				dyplo_number_of_input_queues(cfg_dev);
-		u32 sub_device_id = dyplo_cfg_get_id(cfg_dev);
+		u8 node_type = dyplo_cfg_get_node_type(cfg_dev);
 
-		seq_printf(m, "ctl_index=%d (%c%c) id=%#x fifos in=%d out=%d\n",
+		seq_printf(m, "ctl_index=%d (%c%c) type=%d id=%#x fifos in=%d out=%d\n",
 				ctl_index,
 				(cfg_dev->open_mode & FMODE_READ) ? 'r' : '-',
 				(cfg_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
-				sub_device_id,
+				node_type,
+				dyplo_cfg_get_version_id(cfg_dev),
 				number_of_fifos_in, number_of_fifos_out);
 
-		switch (sub_device_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) {
-			case DYPLO_REG_ID_PRODUCT_TOPIC_CPU:
+		switch (node_type) {
+			case DYPLO_TYPE_ID_TOPIC_CPU:
 				seq_printf(m, " CPU FIFO node\n");
 				dyplo_proc_show_cpu(m, cfg_dev);
 				break;
-			case DYPLO_REG_ID_PRODUCT_TOPIC_DMA:
+			case DYPLO_TYPE_ID_TOPIC_DMA:
 				seq_printf(m, " DMA transfer node\n");
 				dyplo_proc_show_dma(m, cfg_dev);
 				break;
@@ -3548,30 +3503,38 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 
 		for (queue_index = 0; queue_index < number_of_fifos_out; ++queue_index)
 		{
-			unsigned int route = ctl_route_base[queue_index];
+			u32 route = ioread32_quick(ctl_route_base + queue_index);
 			if (route)
 			{
-				int src_ctl_index = route >> dev->stream_id_width;
+				int src_ctl_index = route >> DYPLO_STREAM_ID_WIDTH;
 				if (src_ctl_index > 0)
 				{
-					int src_index = route & ( (0x1 << dev->stream_id_width) - 1);
+					int src_index = route & ( (0x1 << DYPLO_STREAM_ID_WIDTH) - 1);
 					seq_printf(m, " route %d,%d -> %d,%d\n",
 						ctl_index, queue_index, src_ctl_index-1, src_index);
 				}
 			}
 		}
 	}
-	seq_printf(m, "Backplane counters:");
+	seq_printf(m, "Backplane counters:\n F2B:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
 		seq_printf(m, " %d", dyplo_reg_read_quick_index(
-			dev->base, DYPLO_REG_BACKPLANE_COUNTER_BASE, i));
-	seq_printf(m, "\nAXI overhead: %d, Stream in: %d, Stream out: %d\n",
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_AXI_COUNTER_BASE),
-		dyplo_reg_read_quick_index(dev->base, DYPLO_REG_CPU_COUNTER_BASE, 0),
-		dyplo_reg_read_quick_index(dev->base, DYPLO_REG_CPU_COUNTER_BASE, 1));
+			dev->base, DYPLO_REG_BACKPLANE_COUNTER_F2B_BASE, i));
+	seq_printf(m, "\n B2F:");
+	for (i = 0; i < dev->number_of_config_devices; ++i)
+		seq_printf(m, " %d", dyplo_reg_read_quick_index(
+			dev->base, DYPLO_REG_BACKPLANE_COUNTER_B2F_BASE, i));
+	seq_printf(m, "\n BPT:");
+	for (i = 0; i < dev->number_of_config_devices; ++i)
+		seq_printf(m, " %d", dyplo_reg_read_quick_index(
+			dev->base, DYPLO_REG_BACKPLANE_COUNTER_BPT_BASE, i));
+	seq_printf(m, "\nAXI overhead: r=%u w=%u\n",
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_AXI_READ),
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_AXI_WRITE));
 
-	if (!dev->base[DYPLO_REG_CONTROL_LICENSE_VALID/4])
-		seq_printf(m, "WARNING: License expired!\n");
+	if (!((dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_INFO)) & 1))
+		seq_printf(m, "WARNING: License expired, logic is locked.\n");
+
 	return 0;
 }
 
@@ -3588,46 +3551,59 @@ static const struct file_operations dyplo_proc_fops = {
 	.release = single_release,
 };
 
+static int dyplo_core_check_version(struct device *device, struct dyplo_dev *dev)
+{
+	u32 dyplo_version =	dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
+
+	dev_info(device, "Dyplo version %d.%d.%02x\n",
+		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF,
+		dyplo_version & 0xFF);
+	if ((dyplo_version >> 16) != 2015) {
+		dev_err(device, "Unsupported version, only 2015 interface supported\n");
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static u32 dyplo_core_get_number_of_config_devices(struct dyplo_dev *dev)
+{
+	u32 count1 =
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_NODE_COUNT_1);
+	u32 count2 =
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_NODE_COUNT_2);
+
+	return
+		((count1 >> 24) & 0xFF) +
+		((count1 >> 16) & 0xFF) +
+		((count1 >>  8) & 0xFF) +
+		((count1      ) & 0xFF) +
+		((count2 >> 24) & 0xFF) +
+		((count2 >> 16) & 0xFF) +
+		((count2 >>  8) & 0xFF) +
+		((count2      ) & 0xFF);
+}
+
 int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 {
 	dev_t devt;
 	int retval;
 	int device_index;
-	u32 control_id;
-	u32 dyplo_version;
 	struct proc_dir_entry *proc_file_entry;
 	struct device *char_device;
 
 	sema_init(&dev->fop_sem, 1);
 	dev->device = device;
 
-	control_id = dyplo_reg_read_quick(dev->base, DYPLO_REG_ID);
-	if ((control_id & DYPLO_REG_ID_MASK_VENDOR_PRODUCT) !=
-			DYPLO_REG_ID_PRODUCT_TOPIC_CONTROL)
-	{
-		dev_err(device, "Bad device ID: 0x%x\n", control_id);
-		return -EINVAL;
-	}
-
-	dyplo_version = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
-	dev_info(device, "Dyplo version %d.%d.%d\n",
-		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF, dyplo_version & 0xFF);
-	if (dyplo_version >= 0x7DE0403)
-		dev->stream_id_width = 2;
-	else if (dyplo_version > 0x7DE0101)
-		dev->stream_id_width = 3;
-	else
-		dev->stream_id_width = 5;
+	retval = dyplo_core_check_version(device, dev);
+	if (unlikely(retval))
+		return retval;
 
 	retval = dma_set_mask_and_coherent(device, DMA_BIT_MASK(32));
-	if (retval)
+	if (unlikely(retval))
 		dev_warn(device, "Failed to set DMA mask: %d", retval);
 
 	dev->number_of_config_devices =
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_CPU_NODES_COUNT) +
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_IO_NODES_COUNT) +
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_PR_NODES_COUNT) +
-		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_FIXED_NODES_COUNT);
+		dyplo_core_get_number_of_config_devices(dev);
 
 	dev->config_devices = devm_kcalloc(device,
 		dev->number_of_config_devices, sizeof(struct dyplo_config_dev),

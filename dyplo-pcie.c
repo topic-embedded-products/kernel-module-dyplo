@@ -1,5 +1,5 @@
 /*
- * dyplo-of.c
+ * dyplo-pcie.c
  *
  * Dyplo loadable kernel module.
  *

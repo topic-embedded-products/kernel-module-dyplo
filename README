@@ -34,14 +34,15 @@ to your dts file:
 		compatible = "topic,dyplo-1.00.a";
 		reg = <0x64400000 0x200000>;
 		interrupt-parent = <&gic>;
-		interrupts = <0 59 0x4>;
+		interrupts = <0 57 0x4>;
 	};
 };
 
 In this snippet, Dyplo will be using memory address 0x64400000 on the
 AXI bus, and a total of 1MB (0x20000) address space. The interrupt is
-set to 91 (which is 59+32) and must be of the "level" type (0x04).
-These settings must match what was programmed into the IP in the PL.
+set to 89 (which is 57+32) and must be of the "level" type (0x04).
+These settings must match what was programmed into the IP in the PL
+(the DDE connects the Dyplo IP interrupt by default at pin 89).
 If the address is wrong, this will likely result in bus errors or even
 system lockup when the module loads. If the IRQ is incorrect, the driver
 will load and appear to function , but data transfers will fail to

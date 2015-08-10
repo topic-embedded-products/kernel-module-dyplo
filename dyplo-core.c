@@ -3518,15 +3518,15 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 	}
 	seq_printf(m, "Backplane counters:\n F2B:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		seq_printf(m, " %d", dyplo_reg_read_quick_index(
+		seq_printf(m, " %u", dyplo_reg_read_quick_index(
 			dev->base, DYPLO_REG_BACKPLANE_COUNTER_F2B_BASE, i));
 	seq_printf(m, "\n B2F:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		seq_printf(m, " %d", dyplo_reg_read_quick_index(
+		seq_printf(m, " %u", dyplo_reg_read_quick_index(
 			dev->base, DYPLO_REG_BACKPLANE_COUNTER_B2F_BASE, i));
 	seq_printf(m, "\n BPT:");
 	for (i = 0; i < dev->number_of_config_devices; ++i)
-		seq_printf(m, " %d", dyplo_reg_read_quick_index(
+		seq_printf(m, " %u", dyplo_reg_read_quick_index(
 			dev->base, DYPLO_REG_BACKPLANE_COUNTER_BPT_BASE, i));
 	seq_printf(m, "\nAXI overhead: r=%u w=%u\n",
 		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_AXI_READ),

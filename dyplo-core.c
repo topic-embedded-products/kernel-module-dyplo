@@ -2633,7 +2633,7 @@ static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsign
 		case DYPLO_IOC_ROUTE_TELL_FROM_LOGIC:
 			return -ENOTTY; /* Cannot route to this node */
 		case DYPLO_IOC_TRESHOLD_QUERY:
-			return dma_dev->dma_to_logic_memory_size;
+			return dma_dev->dma_to_logic_block_size;
 		case DYPLO_IOC_TRESHOLD_TELL:
 			if (dma_dev->dma_to_logic_block_size == arg)
 				return 0;
@@ -2932,7 +2932,7 @@ static long dyplo_dma_from_logic_ioctl(struct file *filp, unsigned int cmd, unsi
 		case DYPLO_IOC_ROUTE_TELL_FROM_LOGIC:
 			return dyplo_dma_add_route(dma_dev, arg, dyplo_dma_get_route_id(dma_dev));
 		case DYPLO_IOC_TRESHOLD_QUERY:
-			return dma_dev->dma_from_logic_memory_size;
+			return dma_dev->dma_from_logic_block_size;
 		case DYPLO_IOC_TRESHOLD_TELL:
 			if (dma_dev->dma_from_logic_block_size == arg)
 				return 0;

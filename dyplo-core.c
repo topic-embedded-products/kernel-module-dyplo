@@ -305,7 +305,7 @@ static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
 	return status;
 }
 
-loff_t dyplo_ctl_llseek(struct file *filp, loff_t off, int whence)
+static loff_t dyplo_ctl_llseek(struct file *filp, loff_t off, int whence)
 {
     loff_t newpos;
 

@@ -3096,6 +3096,8 @@ static irqreturn_t dyplo_isr(int irq, void *dev_id)
 		}
 		++index;
 	}
+	/* For edge-triggered interrupt, re-arm by writing something */
+	dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_IRQ_REARM, 1);
 	return result;
 }
 
@@ -3708,12 +3710,14 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		goto failed_device_create;
 	}
 
-	retval = devm_request_irq(device, dev->irq, dyplo_isr, 0,
+	retval = devm_request_irq(device, dev->irq, dyplo_isr, IRQF_TRIGGER_HIGH,
 		DRIVER_CLASS_NAME, dev);
 	if (retval) {
 		dev_err(device, "Cannot claim IRQ\n");
 		goto failed_request_irq;
 	}
+	/* For edge-triggered interrupt, re-arm by writing something */
+	dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_IRQ_REARM, 1);
 
 	while (device_index < dev->number_of_config_devices)
 	{

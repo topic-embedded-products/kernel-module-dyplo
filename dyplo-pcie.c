@@ -37,11 +37,17 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Products <www.topic.nl>");
 MODULE_DESCRIPTION("Driver for Topic Dyplo PCIe device");
 
-#define PCI_DEVICE_ID_TOPIC_BOARD		0x7022
+#define PCI_DEVICE_ID_TOPIC_BOARD		0x7024
 
 #ifndef PCI_VENDOR_ID_ALTERA
 #	define PCI_VENDOR_ID_ALTERA		0x1172
 #endif
+
+#define DYPLO_CONTROL_BAR 0
+#define DYPLO_PCIE_BAR 1
+
+#define AXIBAR2PCIEBAR_0U	0x208
+#define AXIBAR2PCIEBAR_0L	0x20C
 
 static const struct pci_device_id dyplo_pci_ids[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_XILINX, PCI_DEVICE_ID_TOPIC_BOARD)},
@@ -51,6 +57,31 @@ static const struct pci_device_id dyplo_pci_ids[] = {
 
 static const char dyplo_pci_name[] = "dyplo-pci";
 
+static void dyplo_pci_write_bar_reg(void __iomem *base, unsigned int reg, u32 data)
+{
+	iowrite32(data, ((__iomem u8*)base) + reg);
+}
+
+static u32 dyplo_pci_read_bar_reg(void __iomem *base, unsigned int reg)
+{
+	return ioread32(((__iomem u8*)base) + reg);
+}
+
+static void dyplo_pci_bar_initialize(struct device *device, void __iomem *regs)
+{
+	u32 reg = dyplo_pci_read_bar_reg(regs, 0x144);
+
+	/* Output some diagnostic link information */
+	dev_info(device, "Link %s x%u %s\n",
+		(reg & 1) ? "5GT/s" : "2.5GT/s", /* BIT0 = link speed */
+		1 << ((reg >> 1) & 0x03),	/* BIT1..2 = number of lanes (1, 2, 4, 8) */
+		(reg & BIT(11)) ? "UP" : "DOWN"); /* Uh, I don't really expect to see "down" here */
+
+	/* We use a very simple translation: All 32-bits to address 0 */
+	dyplo_pci_write_bar_reg(regs, AXIBAR2PCIEBAR_0U, 0);
+	dyplo_pci_write_bar_reg(regs, AXIBAR2PCIEBAR_0L, 0);
+}
+
 static int dyplo_pci_probe(struct pci_dev *pdev,
 				 const struct pci_device_id *ent)
 {
@@ -58,7 +89,7 @@ static int dyplo_pci_probe(struct pci_dev *pdev,
 	struct dyplo_dev *dev;
 	int rc;
 
-	dev_info(device, "%s\n", __func__);
+	dev_dbg(device, "%s\n", __func__);
 
 	dev = devm_kzalloc(device, sizeof(*dev), GFP_KERNEL);
 	if (!dev)
@@ -74,25 +105,28 @@ static int dyplo_pci_probe(struct pci_dev *pdev,
 
 	/* resource configuration */
 
-	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM)) {
+	if (!(pci_resource_flags(pdev, DYPLO_CONTROL_BAR) & IORESOURCE_MEM)) {
 		dev_err(device,
 			"Incorrect BAR configuration. Aborting.\n");
 		return -ENODEV;
 	}
 
-	rc = pcim_iomap_regions(pdev, BIT(0), dyplo_pci_name);
+	rc = pcim_iomap_regions(pdev,
+		BIT(DYPLO_CONTROL_BAR) | BIT(DYPLO_PCIE_BAR), dyplo_pci_name);
 	if (rc) {
 		dev_err(device,
 			"pcim_iomap_regions() failed. Aborting.\n");
 		return rc;
 	}
-	dev->base = pcim_iomap_table(pdev)[0];
+	dev->base = pcim_iomap_table(pdev)[DYPLO_CONTROL_BAR];
 	dev->mem = devm_kzalloc(device, sizeof(*dev->mem), GFP_KERNEL);
 	if (!dev->mem)
 		return -ENOMEM;
-	dev->mem->start = pci_resource_start(pdev, 0);
-	dev->mem->end = pci_resource_end(pdev, 0);
+	dev->mem->start = pci_resource_start(pdev, DYPLO_CONTROL_BAR);
+	dev->mem->end = pci_resource_end(pdev, DYPLO_CONTROL_BAR);
 	dev->mem->flags = IORESOURCE_MEM;
+
+	dyplo_pci_bar_initialize(device, pcim_iomap_table(pdev)[DYPLO_PCIE_BAR]);
 
 	pci_set_master(pdev);
 
@@ -102,7 +136,6 @@ static int dyplo_pci_probe(struct pci_dev *pdev,
 			"Failed to enable MSI interrupts. Aborting.\n");
 		return -ENODEV;
 	}
-
 	dev->irq = pdev->irq;
 	
 	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {

@@ -3304,6 +3304,7 @@ static void destroy_sub_devices_dma_fifo(
 		dma_dev->dma_from_logic_memory, dma_dev->dma_from_logic_handle);
 	dma_free_coherent(device, dma_dev->dma_to_logic_memory_size,
 		dma_dev->dma_to_logic_memory, dma_dev->dma_to_logic_handle);
+	device_destroy(cfg_dev->parent->class, dma_dev->cdev_dma.dev);
 }
 
 static int create_sub_devices(struct dyplo_config_dev *cfg_dev)

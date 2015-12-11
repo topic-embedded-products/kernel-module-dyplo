@@ -53,6 +53,7 @@
 #define DYPLO_VERSION_ID_MASK_VENDOR_PRODUCT \
 	(DYPLO_VERSION_ID_MASK_VENDOR|DYPLO_VERSION_ID_MASK_PRODUCT)
 
+#define DYPLO_REG_CONTROL_STATIC_ID	0x0C
 #define DYPLO_REG_CONTROL_NODE_COUNT_1	0x14
 #define DYPLO_REG_CONTROL_NODE_COUNT_2	0x18
 #define DYPLO_REG_CONTROL_DYPLO_VERSION	0x30
@@ -246,6 +247,7 @@ struct dyplo_dma_configuration_req {
 #define DYPLO_IOC_DMASTANDALONE_STOP_FROM_LOGIC	0x2D
 
 #define DYPLO_IOC_LICENSE_KEY	0x30
+#define DYPLO_IOC_STATIC_ID	0x31
 
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
@@ -318,3 +320,6 @@ struct dyplo_dma_configuration_req {
 /* Read or write a 64-bit license key */
 #define DYPLO_IOCSLICENSE_KEY   _IOW(DYPLO_IOC_MAGIC, DYPLO_IOC_LICENSE_KEY, unsigned long long)
 #define DYPLO_IOCGLICENSE_KEY   _IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_LICENSE_KEY, unsigned long long)
+
+/* Retrieve static ID (to match against partials) */
+#define DYPLO_IOCGSTATIC_ID   _IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_STATIC_ID, unsigned int)

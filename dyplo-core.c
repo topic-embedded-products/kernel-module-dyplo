@@ -539,6 +539,29 @@ static long dyplo_ctl_license_key(struct dyplo_dev *dev, unsigned int cmd, void 
 	return 0;
 }
 
+static long dyplo_ctl_static_id(struct dyplo_dev *dev, unsigned int cmd, unsigned int __user *user_id)
+{
+	int status;
+	unsigned int data;
+
+	if (_IOC_SIZE(cmd) < sizeof(data))
+		return -EINVAL;
+
+	if (_IOC_DIR(cmd) & _IOC_READ) {
+		data = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_STATIC_ID);
+		status = __put_user(data, user_id);
+		if (status)
+			return status;
+		if (!data) {
+			/* When "0" is returned, check the dyplo version to see
+			 * if the Dyplo version is before 2015.1.4 */
+			data = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
+			if (data < ((2015<<16) | 0x0104))
+				return -EIO;
+		}
+	}
+	return 0;
+}
 
 static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
 {
@@ -593,6 +616,9 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 			break;
 		case DYPLO_IOC_LICENSE_KEY:
 			status = dyplo_ctl_license_key(dev, cmd, (void __user *)arg);
+			break;
+		case DYPLO_IOC_STATIC_ID:
+			status = dyplo_ctl_static_id(dev, cmd, (void __user *)arg);
 			break;
 		default:
 			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);
@@ -3463,10 +3489,11 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 		seq_printf(m, "No dyplo device instance!\n");
 		return 0;
 	}
-	seq_printf(m, "ncfg=%d, nfifo w=%u r=%u, ndma=%u\n",
+	seq_printf(m, "ncfg=%d, nfifo w=%u r=%u, ndma=%u id=%#x\n",
 		dev->number_of_config_devices,
 		dev->count_fifo_write_devices, dev->count_fifo_read_devices,
-		dev->number_of_dma_devices);
+		dev->number_of_dma_devices,
+		dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_STATIC_ID));
 
 	seq_printf(m, "Route table:\n");
 	for (ctl_index = 0; ctl_index < dev->number_of_config_devices; ++ctl_index)
@@ -3554,7 +3581,7 @@ static const struct file_operations dyplo_proc_fops = {
 
 static int dyplo_core_check_version(struct device *device, struct dyplo_dev *dev)
 {
-	u32 dyplo_version =	dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
+	u32 dyplo_version = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DYPLO_VERSION);
 
 	dev_info(device, "Dyplo version %d.%d.%02x\n",
 		dyplo_version >> 16, (dyplo_version >> 8) & 0xFF,

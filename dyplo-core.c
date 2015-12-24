@@ -79,6 +79,11 @@ static inline void dyplo_reg_write_quick(u32 __iomem *base, u32 reg, u32 value)
 	iowrite32_quick(value, base + (reg >> 2));
 }
 
+static inline void dyplo_reg_write_quick_index(u32 __iomem *base, u32 reg, u32 index, u32 value)
+{
+	iowrite32_quick(value, (base + (reg >> 2) + index));
+}
+
 static inline u32 dyplo_reg_read(u32 __iomem *base, u32 reg)
 {
 	return ioread32(base + (reg >> 2));
@@ -2590,18 +2595,22 @@ static long dyplo_dma_standalone_setconfig(
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	struct dyplo_dma_standalone_config cfg;
+	u32 *cfg_ptr = (u32*)&cfg;
+	u8 i;
 
 	if (copy_from_user(&cfg, arg, sizeof(cfg)))
 		return -EFAULT;
 
 	switch (direction) {
 		case DMA_TO_DEVICE:
-			memcpy_toio(control_base + (DYPLO_DMA_STANDALONE_TOLOGIC_BASE>>2),
-				&cfg, sizeof(cfg));
+			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
+				dyplo_reg_write_quick_index(control_base, DYPLO_DMA_STANDALONE_TOLOGIC_BASE, i, cfg_ptr[i]);
+			}
 			break;
 		case DMA_FROM_DEVICE:
-			memcpy_toio(control_base + (DYPLO_DMA_STANDALONE_FROMLOGIC_BASE>>2),
-				&cfg, sizeof(cfg));
+			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
+				dyplo_reg_write_quick_index(control_base, DYPLO_DMA_STANDALONE_FROMLOGIC_BASE, i, cfg_ptr[i]);
+			}
 			break;
 		default:
 			return -EINVAL;
@@ -2617,17 +2626,19 @@ static long dyplo_dma_standalone_getconfig(
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 	struct dyplo_dma_standalone_config cfg;
+	u32 *cfg_ptr = (u32*)&cfg;
+	u8 i;
 
 	switch (direction) {
 		case DMA_TO_DEVICE:
-			memcpy_fromio(&cfg,
-				control_base + (DYPLO_DMA_STANDALONE_TOLOGIC_BASE>>2),
-				sizeof(cfg));
+			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
+				cfg_ptr[i] = dyplo_reg_read_quick_index(control_base, DYPLO_DMA_STANDALONE_TOLOGIC_BASE, i);
+			}
 			break;
 		case DMA_FROM_DEVICE:
-			memcpy_fromio(&cfg,
-				control_base + (DYPLO_DMA_STANDALONE_FROMLOGIC_BASE>>2),
-				sizeof(cfg));
+			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
+				cfg_ptr[i] = dyplo_reg_read_quick_index(control_base, DYPLO_DMA_STANDALONE_FROMLOGIC_BASE, i);
+			}
 			break;
 		default:
 			return -EINVAL;

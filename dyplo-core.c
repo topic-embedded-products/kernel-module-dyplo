@@ -3342,6 +3342,25 @@ static void destroy_sub_devices(struct dyplo_config_dev *cfg_dev)
 	}
 }
 
+static const char* dyplo_type_names[] = {
+	[DYPLO_TYPE_ID_TOPIC_CPU] = "CPU",
+	[DYPLO_TYPE_ID_TOPIC_IO] = "IO",
+	[DYPLO_TYPE_ID_TOPIC_FIXED] = "FIXED",
+	[DYPLO_TYPE_ID_TOPIC_PR] = "PR",
+	[DYPLO_TYPE_ID_TOPIC_DMA] = "DMA",
+	[DYPLO_TYPE_ID_TOPIC_ICAP] = "ICAP",
+};
+static const char* dyplo_get_type_name(u8 type_id)
+{
+	const char* result;
+	if (type_id >= ARRAY_SIZE(dyplo_type_names))
+		return "";
+	result = dyplo_type_names[type_id];
+	if (!result)
+		return "";
+	return result;
+}
+
 static void dyplo_proc_show_cpu(struct seq_file *m, struct dyplo_config_dev *cfg_dev)
 {
 	__iomem int *control_base = cfg_dev->control_base;
@@ -3494,11 +3513,11 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 				dyplo_number_of_input_queues(cfg_dev);
 		u8 node_type = dyplo_cfg_get_node_type(cfg_dev);
 
-		seq_printf(m, "ctl_index=%d (%c%c) type=%d id=%#x fifos in=%d out=%d\n",
+		seq_printf(m, "ctl_index=%d (%c%c) type=%d (%s) id=%#x fifos in=%d out=%d\n",
 				ctl_index,
 				(cfg_dev->open_mode & FMODE_READ) ? 'r' : '-',
 				(cfg_dev->open_mode & FMODE_WRITE) ? 'w' : '-',
-				node_type,
+				node_type, dyplo_get_type_name(node_type),
 				dyplo_cfg_get_version_id(cfg_dev),
 				number_of_fifos_in, number_of_fifos_out);
 

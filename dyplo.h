@@ -228,6 +228,8 @@ struct dyplo_dma_configuration_req {
 #define DYPLO_IOC_BACKPLANE_DISABLE	0x09
 #define DYPLO_IOC_BACKPLANE_ENABLE	0x0A
 
+#define DYPLO_IOC_ICAP_INDEX_QUERY	0x0B
+
 #define DYPLO_IOC_RESET_FIFO_WRITE	0x0C
 #define DYPLO_IOC_RESET_FIFO_READ	0x0D
 
@@ -287,6 +289,8 @@ struct dyplo_dma_configuration_req {
  * you want to replace a node using partial configuration. Operations are atomic. */
 #define DYPLO_IOCTBACKPLANE_ENABLE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_BACKPLANE_ENABLE)
 #define DYPLO_IOCTBACKPLANE_DISABLE  _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_BACKPLANE_DISABLE)
+/* Get ICAP index. Returns negative ENODEV if no ICAP available */
+#define DYPLO_IOCQICAP_INDEX	_IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ICAP_INDEX_QUERY)
 /* Set the thresholds for "writeable" or "readable" on a CPU node fifo. Allows
  * tuning for low latency or reduced interrupt rate. */
 #define DYPLO_IOCQTRESHOLD   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_TRESHOLD_QUERY)

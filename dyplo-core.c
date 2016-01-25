@@ -588,6 +588,15 @@ static long dyplo_ctl_static_id(struct dyplo_dev *dev, unsigned int cmd, unsigne
 	return 0;
 }
 
+static int dyplo_get_icap_device_index(struct dyplo_dev *dev)
+{
+	u8 index = dev->icap_device_index;
+
+	if (index == ICAP_NOT_AVAILABLE)
+		return -ENODEV;
+	return index;
+}
+
 static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsigned long arg)
 {
 	int status;
@@ -638,6 +647,9 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 		case DYPLO_IOC_BACKPLANE_DISABLE:
 			dyplo_reg_write_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_CLR, arg << 1);
 			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
+			break;
+		case DYPLO_IOC_ICAP_INDEX_QUERY:
+			status = dyplo_get_icap_device_index(dev);
 			break;
 		case DYPLO_IOC_LICENSE_KEY:
 			status = dyplo_ctl_license_key(dev, cmd, (void __user *)arg);
@@ -3317,16 +3329,28 @@ static void destroy_sub_devices_dma_fifo(
 	device_destroy(cfg_dev->parent->class, dma_dev->cdev_dma.dev);
 }
 
+static int create_sub_devices_icap(struct dyplo_config_dev *cfg_dev)
+{
+	struct dyplo_dev *dev = cfg_dev->parent;
+	unsigned int device_index = dyplo_get_config_index(cfg_dev);
+
+	cfg_dev->isr = dyplo_generic_isr;
+	dev->icap_device_index = device_index;
+	return 0;
+}
+
 static int create_sub_devices(struct dyplo_config_dev *cfg_dev)
 {
 	switch (dyplo_cfg_get_node_type(cfg_dev)) {
-		case DYPLO_TYPE_ID_TOPIC_CPU:
-			return create_sub_devices_cpu_fifo(cfg_dev);
-		case DYPLO_TYPE_ID_TOPIC_DMA:
-			return create_sub_devices_dma_fifo(cfg_dev);
-		default:
-			cfg_dev->isr = dyplo_generic_isr;
-			return 0; /* No subdevice needed */
+	case DYPLO_TYPE_ID_TOPIC_CPU:
+		return create_sub_devices_cpu_fifo(cfg_dev);
+	case DYPLO_TYPE_ID_TOPIC_DMA:
+		return create_sub_devices_dma_fifo(cfg_dev);
+	case DYPLO_TYPE_ID_TOPIC_ICAP:
+		return create_sub_devices_icap(cfg_dev);
+	default:
+		cfg_dev->isr = dyplo_generic_isr;
+		return 0;
 	}
 }
 

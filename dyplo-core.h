@@ -34,6 +34,8 @@
 #include <linux/semaphore.h>
 #include <linux/wait.h>
 
+#define ICAP_NOT_AVAILABLE	((u8)-1)
+
 struct dyplo_dev; /* forward */
 
 struct dyplo_config_dev
@@ -64,6 +66,7 @@ struct dyplo_dev
 	u8 count_fifo_write_devices;
 	u8 count_fifo_read_devices;
 	u8 number_of_dma_devices;
+	u8 icap_device_index;
 };
 
 int dyplo_core_remove(struct device *device, struct dyplo_dev *dev);

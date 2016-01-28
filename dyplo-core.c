@@ -40,6 +40,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/kfifo.h>
 #include "dyplo-core.h"
+#include "dyplo-ioctl.h"
 #include "dyplo.h"
 
 MODULE_LICENSE("GPL");

@@ -228,6 +228,73 @@ static u8 dyplo_number_of_output_queues(const struct dyplo_config_dev *cfg_dev)
 	return (dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_NODE_INFO) >> 4) & 0x0F;
 }
 
+static ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
+	char __user *buf, size_t count, loff_t *f_pos)
+{
+	size_t offset;
+	unsigned int words_to_transfer;
+	unsigned int __user *wbuf = (unsigned int __user *)buf;
+	unsigned int data;
+
+	/* EOF when past our area */
+	if (*f_pos >= DYPLO_CONFIG_SIZE)
+		return 0;
+
+	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
+	count &= ~0x03;
+	if ((offset + count) > DYPLO_CONFIG_SIZE)
+		count = DYPLO_CONFIG_SIZE - offset;
+	mapped_memory += (offset >> 2);
+	if (unlikely(!access_ok(VERIFY_WRITE, buf, count)))
+		return -EFAULT;
+
+	for (words_to_transfer = count >> 2; words_to_transfer != 0; --words_to_transfer) {
+		data = ioread32_quick(mapped_memory);
+		__put_user(data, wbuf);
+		++wbuf;
+		++mapped_memory;
+	}
+
+	*f_pos = offset + count;
+
+	return count;
+}
+
+static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
+	const char __user *buf, size_t count, loff_t *f_pos)
+{
+	size_t offset;
+	unsigned int words_to_transfer;
+	const unsigned int __user *wbuf = (const unsigned int __user *)buf;
+	unsigned int data;
+
+	/* EOF when past our area */
+	if (*f_pos >= DYPLO_CONFIG_SIZE)
+		return 0;
+
+	if (count < 4) /* Do not allow read or write below word size */
+		return -EINVAL;
+
+	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
+	count &= ~0x03;
+	if ((offset + count) > DYPLO_CONFIG_SIZE)
+		count = DYPLO_CONFIG_SIZE - offset;
+	mapped_memory += (offset >> 2);
+	if (unlikely(!access_ok(VERIFY_READ, buf, count)))
+		return -EFAULT;
+
+	for (words_to_transfer = count >> 2; words_to_transfer != 0; --words_to_transfer) {
+		__get_user(data, wbuf);
+		iowrite32_quick(data, mapped_memory);
+		++wbuf;
+		++mapped_memory;
+	}
+
+	*f_pos = offset + count;
+
+	return count;
+}
+
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
 {
 	int status = 0;
@@ -250,64 +317,17 @@ static int dyplo_ctl_release(struct inode *inode, struct file *filp)
 static ssize_t dyplo_ctl_write (struct file *filp, const char __user *buf, size_t count,
 	loff_t *f_pos)
 {
-	int status;
 	struct dyplo_dev *dev = filp->private_data;
-	u32 __iomem *mapped_memory = dev->base;
-	size_t offset;
 
-	/* EOF when past our area */
-	if (*f_pos >= DYPLO_CONFIG_SIZE)
-		return 0;
-
-	if (count < 4) /* Do not allow read or write below word size */
-		return -EINVAL;
-
-	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
-	count &= ~0x03;
-	if ((offset + count) > DYPLO_CONFIG_SIZE)
-		count = DYPLO_CONFIG_SIZE - offset;
-
-	if (copy_from_user(mapped_memory + (offset >> 2), buf, count))
-	{
-		status = -EFAULT;
-	}
-	else
-	{
-		status = count;
-		*f_pos = offset + count;
-	}
-
-	return status;
+	return dyplo_generic_write(dev->base, buf, count, f_pos);
 }
 
 static ssize_t dyplo_ctl_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-	int status;
 	struct dyplo_dev *dev = filp->private_data;
-	u32 __iomem *mapped_memory = dev->base;
-	size_t offset;
 
-	/* EOF when past our area */
-	if (*f_pos >= DYPLO_CONFIG_SIZE)
-		return 0;
-
-	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
-	count &= ~0x03;
-	if ((offset + count) > DYPLO_CONFIG_SIZE)
-		count = DYPLO_CONFIG_SIZE - offset;
-
-	if (copy_to_user(buf, mapped_memory + (offset >> 2), count))
-	{
-		status = -EFAULT;
-	}
-	else
-	{
-		status = count;
-		*f_pos = offset + count;
-	}
-
-	return status;
+	return dyplo_generic_read(dev->base, buf, count, f_pos);
 }
 
 static loff_t dyplo_ctl_llseek(struct file *filp, loff_t off, int whence)
@@ -692,64 +712,17 @@ static int dyplo_cfg_release(struct inode *inode, struct file *filp)
 static ssize_t dyplo_cfg_read(struct file *filp, char __user *buf, size_t count,
                 loff_t *f_pos)
 {
-	int status;
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	u32 __iomem *mapped_memory = cfg_dev->base;
-	size_t offset;
 
-	/* EOF when past our area */
-	if (*f_pos >= DYPLO_CONFIG_SIZE)
-		return 0;
-
-	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
-	count &= ~0x03;
-	if ((offset + count) > DYPLO_CONFIG_SIZE)
-		count = DYPLO_CONFIG_SIZE - offset;
-
-	if (unlikely(copy_to_user(buf, mapped_memory + (offset >> 2), count)))
-	{
-		status = -EFAULT;
-	}
-	else
-	{
-		status = count;
-		*f_pos = offset + count;
-	}
-
-	return status;
+	return dyplo_generic_read(cfg_dev->base, buf, count, f_pos);
 }
 
 static ssize_t dyplo_cfg_write (struct file *filp, const char __user *buf, size_t count,
 	loff_t *f_pos)
 {
-	int status;
 	struct dyplo_config_dev *cfg_dev = filp->private_data;
-	u32 __iomem *mapped_memory = cfg_dev->base;
-	size_t offset;
 
-	/* EOF when past our area */
-	if (*f_pos >= DYPLO_CONFIG_SIZE)
-		return 0;
-
-	if (count < 4) /* Do not allow read or write below word size */
-		return -EINVAL;
-
-	offset = ((size_t)*f_pos) & ~0x03; /* Align to word size */
-	count &= ~0x03;
-	if ((offset + count) > DYPLO_CONFIG_SIZE)
-		count = DYPLO_CONFIG_SIZE - offset;
-
-	if (unlikely(copy_from_user(mapped_memory + (offset >> 2), buf, count)))
-	{
-		status = -EFAULT;
-	}
-	else
-	{
-		status = count;
-		*f_pos = offset + count;
-	}
-
-	return status;
+	return dyplo_generic_write(cfg_dev->base, buf, count, f_pos);
 }
 
 loff_t dyplo_cfg_llseek(struct file *filp, loff_t off, int whence)

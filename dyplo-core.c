@@ -1713,6 +1713,14 @@ static int dyplo_dma_from_logic_release(struct inode *inode, struct file *filp)
 	return dyplo_dma_common_release(filp, FMODE_READ);
 }
 
+/* CPU and DMA shouldn't be accessing the same cache line simultaneously.
+ * Since PAGE_SIZE is guaranteed to be larger, use that to align the head
+ * pointer for DMA transfers. */
+static unsigned int round_up_to_cacheline(unsigned int value)
+{
+	return (value + (PAGE_SIZE-1)) & (~(PAGE_SIZE-1));
+}
+
 static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
@@ -1753,7 +1761,7 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 			}
 			BUG();
 		}
-		dma_dev->dma_to_logic_tail += op.size;
+		dma_dev->dma_to_logic_tail += round_up_to_cacheline(op.size);
 		if (dma_dev->dma_to_logic_tail == dma_dev->dma_to_logic_memory_size)
 			dma_dev->dma_to_logic_tail = 0;
 		pr_debug("%s tail=%u\n", __func__, dma_dev->dma_to_logic_tail);
@@ -1877,7 +1885,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 		}
 
 		/* Update pointers for next chunk, if any */
-		dma_dev->dma_to_logic_head += bytes_to_copy;
+		dma_dev->dma_to_logic_head += round_up_to_cacheline(bytes_to_copy);
 		if (dma_dev->dma_to_logic_head == dma_dev->dma_to_logic_memory_size)
 			dma_dev->dma_to_logic_head = 0;
 		pr_debug("%s head=%u\n", __func__, dma_dev->dma_to_logic_head);

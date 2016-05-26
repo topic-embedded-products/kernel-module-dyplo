@@ -534,7 +534,7 @@ static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 			dyplo_number_of_output_queues(&dev->config_devices[ctl_index]);
 		for (queue_index = 0; queue_index < number_of_fifos; ++queue_index)
 			iowrite32_quick(0, ctl_route_base + queue_index);
-		ctl_route_base += 4;
+		ctl_route_base += (1 << DYPLO_STREAM_ID_WIDTH);
 	}
 	return 0;
 }

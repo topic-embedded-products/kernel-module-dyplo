@@ -25,10 +25,6 @@ read, seek, write:
   Allows to manipulate memory as if it were a file. All sizes and
   offsets must be aligned on 32-bit boundaries. Writing or reading less
   than 4 bytes will fail.
-mmap:
-  Provides a direct mapping of the configuration memory. Read/write to
-  the returned pointer will directly be directed at the AXI interface
-  of the device, so alignment and other restrictions may apply.
 
 /dev/dyplor*
 Access to a "Read" type fifo in the CPU node.
@@ -52,26 +48,81 @@ write:
 poll:
   Allows the device to be used in a select() or poll() system call.
 
+/dev/dyplod*
+Access to a DMA node.
+Each stream can be opened only once, the access requested determines which
+stream direction it refers to. Opening in RDWR mode is interpreted as WRONLY.
+Can be used as regular file, in non-blocking and special zero-copy modes.
+write:
+  Writes data to to logic. Data is copied into an internal DMA buffer. Blocks
+  if there is not enough room in the DMA buffer to hold all data. Each write
+  is sent out as a single DMA transfer, or, if too large, split into smaller
+  chunks.
+read:
+  Read data from logic. Data flows into an internal DMA buffer in background,
+  reading the device copies that data into the user buffer. Blocks if there
+  is no data available. DMA must transfer a full block before it can be read,
+  this block size can be retrieved and changed using ioctl.
+poll:
+  Allows the device to be used in a select() or poll() system call.
+
 /proc/dyplo
 Outputs debugging information about the device's status. Will read
 various fields via the AXI bus and display the contents in ASCII.
 Displays:
 ncfg=11, nfifo w=8 r=8, ndma=4                                                  
   Number of configurable blocks (3) including CPU interface and number
-  of FIFO's (8), both read and write and number of DMA nodes (4). 
-fifo=11 w=255 (  3.i) r=   0 (   0w.)                                           
-  FIFO state. For each fifo, displays the index (11), the number of
-  32-bit words available in the write buffer (255), the threshold that
-  will trigger an interrupt(3), whether the fifo is currently waiting
-  for an irq (no), if the interrupt status is active (yes),
-  the number of bytes waiting in the read fifo (0), the current treshold
-  (0), whether it is waiting for an interrupt (yes) and whether the irq
-  is signaled (no).
+  of FIFO's (8), both read and write and number of DMA nodes (4).
+ctl_index=0 (--) type=2 (CPU) id=0x1010101 fifos in=4 out=4
+  Node information: Node type is 2, a CPU FIFO. Number of incoming (4) and
+  outgoing (4, seen from the node) streams.
+fifo=11 w=255 0 (  3.i) r=   0 0 (   0w.)
+           ^                 ^         ^- Interrupt active (no)
+           |                 |        ^-- Currently waiting for interrupt
+           |                 |      ^---- Interrupt treshold
+           |                 | ^- User bits
+           |                 +---- Number of words available in read buffer
+           |         ^- Interrupt active (yes)
+           |        ^-- Currently waiting for interrupt (no)
+           |      ^---- Interrupt treshold
+           |  ^- User bits
+           +---- Number of words available in write buffer
+     ^- Index of stream
 route 0,1 -> 2,0                                                                
   Route assignment. Displays outgoing fifo control node and index, and
   the receiving fifo control node and index. In this case, a route from
   node 0 fifo 1 to node 2 fifo 0.
- 
+CPU to PL (-): cnt=1 sz=3686400 fl=0x1 re=1 fr=8 idle=Y
+           ^       ^      ^        ^      ^    ^      ^- DMA core status
+           |       |      |        |      |    + Free space in DMA queue
+           |       |      |        |      +- Results ready in DMA queue
+           |       |      |        +- Flags (driver internal)
+           |       |      +- Size of each block
+           |       +- Number of allocated blocks
+           +- Node is open for Reading or Writing
+  This DMA node is currently in "block transfer" mode (zero-copy DMA).
+PL to CPU (-): sz=262144 hd=65536 tl=65536 full=N re=0 fr=8 idle=Y
+           ^       ^          ^        ^        ^    ^    ^      ^- Core status
+           |       |          |        |        |    |    + Free space in DMA queue
+           |       |          |        |        |    +- Results ready in DMA queue
+           |       |          |        |        +- When head=tail, is the buffer full?
+           |       |          |        +- Tail pointer in the cyclic buffer
+           |       |          +- Head pointer in the cyclic buffer
+           |       +- Size of the cyclic buffer used in hardware transfers
+           +- Node is open for Reading or Writing
+  This DMA node is in normal file mode. Data is copied from the cyclic buffer into
+  user buffers when reading from the device file.
+ctl_index=9 (--) type=7 (ICAP) id=0x1010101 fifos in=1 out=0
+  Special "ICAP" node that only has one incoming data stream. This node is responsible
+  for programming partial reconfigurable nodes.
+Backplane counters:
+  F2B: Fifo to backplane. For each node, the number of words sent to other nodes
+  B2F: Backplane toFifo. For each node, the number of words received from other nodes
+  BPT: Backplane traffic, number of words "passing by".
+AXI overhead: r=321 w=60
+  Number of words read or written to the AXI bus to control the IP, but not part of
+  transferred data streams. Reading /proc/dyplo also increments these values.
+
 
 Typical driver usage from userspace:
 - Open /dev/dyploctl
@@ -81,3 +132,4 @@ Typical driver usage from userspace:
 - Use ioctrl(dyploctl, DYPLO_IOCSROUTE, ...) to set up routes to and
   from the first configurable block to fifo's X and Y.
 - Write data to dyplowY and read results back from dyplorX.
+

@@ -1493,7 +1493,7 @@ static void dyplo_dma_to_logic_enable(u32 __iomem *control_base, bool value)
 static bool dyplo_dma_common_is_standalone_mode(struct dyplo_dma_dev *dma_dev)
 {
 	return !!(dyplo_reg_read_quick(dma_dev->config_parent->control_base,
-			DYPLO_DMA_STANDALONE_CONTROL) && BIT(0));
+			DYPLO_DMA_STANDALONE_CONTROL) & BIT(0));
 }
 
 static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev);

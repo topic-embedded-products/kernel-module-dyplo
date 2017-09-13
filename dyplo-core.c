@@ -2125,17 +2125,27 @@ static void dyplo_dma_common_block_free_streaming(struct dyplo_dev *dev,
 	enum dma_data_direction direction)
 {
 	u32 i;
+#ifdef DEFINE_DMA_ATTRS
+	/* Pre-4.9 kernels use this macro, this is to be compatible with that */
 	DEFINE_DMA_ATTRS(attrs);
-
 	dma_set_attr(DMA_ATTR_WRITE_COMBINE, &attrs);
 	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &attrs);
 	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
+#endif
 
 	for (i = 0; i < dma_block_set->count; ++i) {
 		struct dyplo_dma_block *block = &dma_block_set->blocks[i];
 		if (block->mem_addr) {
+#ifdef DEFINE_DMA_ATTRS
 			dma_unmap_single_attrs(dev->device, block->phys_addr,
 					block->data.size, direction, &attrs);
+#else
+			dma_unmap_single_attrs(dev->device, block->phys_addr,
+					block->data.size, direction,
+					DMA_ATTR_WRITE_COMBINE |
+					DMA_ATTR_NO_KERNEL_MAPPING |
+					DMA_ATTR_NON_CONSISTENT);
+#endif
 			kfree(block->mem_addr);
 		}
 	}
@@ -2203,17 +2213,26 @@ static int dyplo_dma_common_block_alloc_one_streaming(
 {
 	struct dyplo_dev *dev = dma_dev->config_parent->parent;
 	int ret;
+#ifdef DEFINE_DMA_ATTRS
 	DEFINE_DMA_ATTRS(attrs);
-
 	dma_set_attr(DMA_ATTR_WRITE_COMBINE, &attrs);
 	dma_set_attr(DMA_ATTR_NO_KERNEL_MAPPING, &attrs);
 	dma_set_attr(DMA_ATTR_NON_CONSISTENT, &attrs);
+#endif
 
 	block->mem_addr = kmalloc(block->data.size, GFP_KERNEL | GFP_DMA);
 	if (!block->mem_addr)
 		return -ENOMEM;
+#ifdef DEFINE_DMA_ATTRS
 	block->phys_addr = dma_map_single_attrs(dev->device, block->mem_addr,
 		block->data.size, direction, &attrs);
+#else
+	block->phys_addr = dma_map_single_attrs(dev->device, block->mem_addr,
+		block->data.size, direction,
+		DMA_ATTR_WRITE_COMBINE |
+		DMA_ATTR_NO_KERNEL_MAPPING |
+		DMA_ATTR_NON_CONSISTENT);
+#endif
 	ret = dma_mapping_error(dev->device, block->phys_addr);
 	if (unlikely(ret)) {
 		kfree(block->mem_addr);

@@ -421,6 +421,7 @@ static int dyplo_ctl_route_add(struct dyplo_dev *dev, struct dyplo_route_item_t 
 	return 0;
 }
 
+
 static int dyplo_ctl_route_add_from_user(struct dyplo_dev *dev, const struct dyplo_route_t __user *uroutes)
 {
 	int status = 0;
@@ -521,6 +522,25 @@ static int dyplo_ctl_route_delete(struct dyplo_dev *dev, int ctl_index_to_delete
 	}
 	return 0;
 }
+
+
+static int dyplo_ctl_route_single_delete(struct dyplo_dev *dev, struct dyplo_route_item_t route)
+{
+	u32 dst_route;
+
+	pr_debug("%s %d,%d->%d,%d\n", __func__,
+		route.srcNode, route.srcFifo, route.dstNode, route.dstFifo);
+	if ((route.srcNode >= dev->number_of_config_devices) ||
+	    (route.dstNode >= dev->number_of_config_devices))
+	{
+		pr_debug("%s: Invalid source or destination\n", __func__);
+	    return -EINVAL;
+	}
+	dst_route = ((route.dstNode + 1) << DYPLO_STREAM_ID_WIDTH) | route.dstFifo;
+	dyplo_ctl_route_remove_dst(dev, dst_route);
+	return 0;
+}
+
 
 static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 {
@@ -638,6 +658,13 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 		case DYPLO_IOC_ROUTE_DELETE: /* Remove routes to a node */
 			status = dyplo_ctl_route_delete(dev, arg);
 			break;
+        case DYPLO_IOC_ROUTE_SINGLE_DELETE: /* Remove single route */
+        {
+            union dyplo_route_item_u u;
+			u.route = arg;
+			status = dyplo_ctl_route_single_delete(dev, u.route_item);
+			break;
+        }
 		case DYPLO_IOC_BACKPLANE_STATUS:
 			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;

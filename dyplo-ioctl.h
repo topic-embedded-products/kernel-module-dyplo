@@ -127,6 +127,8 @@ struct dyplo_dma_configuration_req {
 #define DYPLO_IOC_LICENSE_KEY	0x30
 #define DYPLO_IOC_STATIC_ID	0x31
 
+#define DYPLO_IOC_ROUTE_SINGLE_DELETE 0x32
+
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
  * G means "Get" through a ptr
@@ -142,6 +144,8 @@ struct dyplo_dma_configuration_req {
 #define DYPLO_IOCTROUTE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_TELL)
 /* Remove routes to a node. Argument is a integer node number. */
 #define DYPLO_IOCTROUTE_DELETE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_DELETE)
+/* Remove single route. Argument is a dyplo_route_item_t cast to integer */
+#define DYPLO_IOCTROUTE_SINGLE_DELETE   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_ROUTE_SINGLE_DELETE)
 
 /* Add a route from "this" dma or cpu node to another node. The argument
  * is an integer of destination node | fifo << 8 */

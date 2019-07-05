@@ -72,3 +72,5 @@ struct dyplo_dev
 int dyplo_core_remove(struct device *device, struct dyplo_dev *dev);
 
 int dyplo_core_probe(struct device *device, struct dyplo_dev *dev);
+
+void dyplo_core_apply_license(struct dyplo_dev *dev, const void *data);

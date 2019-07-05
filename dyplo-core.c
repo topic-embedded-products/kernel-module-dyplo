@@ -34,6 +34,7 @@
 #include <linux/slab.h>
 #include <linux/poll.h>
 #include <asm/uaccess.h>
+#include <asm/unaligned.h>
 #include <asm/io.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -3698,6 +3699,18 @@ static u32 dyplo_core_get_number_of_config_devices(struct dyplo_dev *dev)
 		((count2 >> 16) & 0xFF) +
 		((count2 >>  8) & 0xFF) +
 		((count2      ) & 0xFF);
+}
+
+void dyplo_core_apply_license(struct dyplo_dev *dev, const void *data)
+{
+	u32 key;
+
+	key = get_unaligned_le32(data);
+	dyplo_reg_write_quick(dev->base,
+		DYPLO_REG_CONTROL_LICENSE_KEY0, key);
+	key = get_unaligned_le32((const u8*)data + 4);
+	dyplo_reg_write_quick(dev->base,
+		DYPLO_REG_CONTROL_LICENSE_KEY1, key);
 }
 
 int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)

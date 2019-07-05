@@ -29,11 +29,41 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/init.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/slab.h>
 #include "dyplo-core.h"
+#include "dyplo.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Topic Embedded Products <www.topic.nl>");
+
+static int dyplo_of_nvmem_license(struct dyplo_dev *dev, struct device_node *np)
+{
+	struct nvmem_cell *cell;
+	const void *data;
+	size_t len;
+	int ret;
+
+	cell = of_nvmem_cell_get(np, "license");
+	if (IS_ERR(cell))
+		return PTR_ERR(cell);
+
+	data = nvmem_cell_read(cell, &len);
+
+	nvmem_cell_put(cell);
+
+	if (IS_ERR(data))
+		return PTR_ERR(data);
+
+	if (len < 8)
+		ret = -EINVAL;
+	else
+		dyplo_core_apply_license(dev, data);
+
+	kfree(data);
+
+	return ret;
+}
 
 static int dyplo_probe(struct platform_device *pdev)
 {
@@ -57,7 +87,9 @@ static int dyplo_probe(struct platform_device *pdev)
 		dev_err(device, "IRQ resource missing\n");
 		return -ENOENT;
 	}
-	
+
+	dyplo_of_nvmem_license(dev, device->of_node);
+
 	return dyplo_core_probe(device, dev);
 }
 

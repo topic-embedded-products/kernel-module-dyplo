@@ -129,6 +129,9 @@ struct dyplo_dma_configuration_req {
 
 #define DYPLO_IOC_ROUTE_SINGLE_DELETE 0x32
 
+#define DYPLO_IOC_DEVICE_ID	0x33
+#define DYPLO_IOC_LICENSE_INFO	0x34
+
 /* S means "Set" through a ptr,
  * T means "Tell", sets directly
  * G means "Get" through a ptr
@@ -204,6 +207,12 @@ struct dyplo_dma_configuration_req {
 /* Read or write a 64-bit license key */
 #define DYPLO_IOCSLICENSE_KEY   _IOW(DYPLO_IOC_MAGIC, DYPLO_IOC_LICENSE_KEY, unsigned long long)
 #define DYPLO_IOCGLICENSE_KEY   _IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_LICENSE_KEY, unsigned long long)
+
+/* Retrieve the DEVICE_ID for requesting a license key for a device */
+#define DYPLO_IOCGDEVICE_ID     _IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_DEVICE_ID, unsigned long long)
+
+/* Retrieve license info from logic: BIT(0) indicates "license invalid" */
+#define DYPLO_IOCQLICENSE_INFO  _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_LICENSE_INFO)
 
 /* Retrieve static ID (to match against partials) */
 #define DYPLO_IOCGSTATIC_ID   _IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_STATIC_ID, unsigned int)

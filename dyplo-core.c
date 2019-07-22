@@ -565,7 +565,7 @@ static int dyplo_ctl_route_clear(struct dyplo_dev *dev)
 	return 0;
 }
 
-static long dyplo_ctl_license_key(struct dyplo_dev *dev, unsigned int cmd, void __user *user_key)
+static long dyplo_ctl_io64(struct dyplo_dev *dev, unsigned int reg, unsigned int cmd, void __user *user_key)
 {
 	int status;
 	u32 key[2];
@@ -578,12 +578,12 @@ static long dyplo_ctl_license_key(struct dyplo_dev *dev, unsigned int cmd, void 
 		status = __copy_from_user(key, user_key, sizeof(key));
 		if (status)
 			return status;
-		dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY0, key[0]);
-		dyplo_reg_write_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY1, key[1]);
+		dyplo_reg_write_quick(dev->base, reg, key[0]);
+		dyplo_reg_write_quick(dev->base, reg + 4, key[1]);
 	}
 	if (_IOC_DIR(cmd) & _IOC_READ) {
-		key[0] = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY0);
-		key[1] = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_KEY1);
+		key[0] = dyplo_reg_read_quick(dev->base, reg);
+		key[1] = dyplo_reg_read_quick(dev->base, reg + 4);
 		status = __copy_to_user(user_key, key, sizeof(key));
 		if (status)
 			return status;
@@ -686,10 +686,16 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 			status = dyplo_get_icap_device_index(dev);
 			break;
 		case DYPLO_IOC_LICENSE_KEY:
-			status = dyplo_ctl_license_key(dev, cmd, (void __user *)arg);
+			status = dyplo_ctl_io64(dev, DYPLO_REG_CONTROL_LICENSE_KEY0, cmd, (void __user *)arg);
 			break;
 		case DYPLO_IOC_STATIC_ID:
 			status = dyplo_ctl_static_id(dev, cmd, (void __user *)arg);
+			break;
+		case DYPLO_IOC_DEVICE_ID:
+			status = dyplo_ctl_io64(dev, DYPLO_REG_CONTROL_DEVICE_ID0, cmd, (void __user *)arg);
+			break;
+		case DYPLO_IOC_LICENSE_INFO:
+			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_LICENSE_INFO);
 			break;
 		default:
 			printk(KERN_WARNING "DYPLO ioctl unknown command: %d (arg=0x%lx).\n", _IOC_NR(cmd), arg);

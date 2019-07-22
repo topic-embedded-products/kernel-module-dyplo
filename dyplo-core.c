@@ -664,13 +664,13 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 		case DYPLO_IOC_ROUTE_DELETE: /* Remove routes to a node */
 			status = dyplo_ctl_route_delete(dev, arg);
 			break;
-        case DYPLO_IOC_ROUTE_SINGLE_DELETE: /* Remove single route */
-        {
-            union dyplo_route_item_u u;
+		case DYPLO_IOC_ROUTE_SINGLE_DELETE: /* Remove single route */
+		{
+			union dyplo_route_item_u u;
 			u.route = arg;
 			status = dyplo_ctl_route_single_delete(dev, u.route_item);
 			break;
-        }
+		}
 		case DYPLO_IOC_BACKPLANE_STATUS:
 			status = dyplo_reg_read_quick(dev->base, DYPLO_REG_BACKPLANE_ENABLE_STATUS) >> 1;
 			break;

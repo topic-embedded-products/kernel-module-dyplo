@@ -252,7 +252,11 @@ static ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
 	if ((offset + count) > DYPLO_CONFIG_SIZE)
 		count = DYPLO_CONFIG_SIZE - offset;
 	mapped_memory += (offset >> 2);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+	if (unlikely(!access_ok(buf, count)))
+#else
 	if (unlikely(!access_ok(VERIFY_WRITE, buf, count)))
+#endif
 		return -EFAULT;
 
 	for (words_to_transfer = count >> 2; words_to_transfer != 0; --words_to_transfer) {
@@ -287,7 +291,11 @@ static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
 	if ((offset + count) > DYPLO_CONFIG_SIZE)
 		count = DYPLO_CONFIG_SIZE - offset;
 	mapped_memory += (offset >> 2);
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+	if (unlikely(!access_ok(buf, count)))
+#else
 	if (unlikely(!access_ok(VERIFY_READ, buf, count)))
+#endif
 		return -EFAULT;
 
 	for (words_to_transfer = count >> 2; words_to_transfer != 0; --words_to_transfer) {
@@ -635,11 +643,19 @@ static long dyplo_ctl_ioctl_impl(struct dyplo_dev *dev, unsigned int cmd, unsign
 	/* Verify read/write access to user memory early on */
 	if (_IOC_DIR(cmd) & _IOC_READ) 	{
 		/* IOC and VERIFY use different perspectives, hence the "WRITE" and "READ" confusion */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+		if (unlikely(!access_ok((void __user *)arg, _IOC_SIZE(cmd))))
+#else
 		if (unlikely(!access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd))))
+#endif
 			return -EFAULT;
 	}
 	else if (_IOC_DIR(cmd) & _IOC_WRITE) {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)    
+		if (unlikely(!access_ok((void __user *)arg, _IOC_SIZE(cmd))))
+#else    
 		if (unlikely(!access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd))))
+#endif
 			return -EFAULT;
 	}
 
@@ -1017,7 +1033,11 @@ static ssize_t dyplo_fifo_read_read(struct file *filp, char __user *buf, size_t 
 
 	count &= ~0x03; /* Align to words */
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+	if (!access_ok(buf, count))
+#else
 	if (!access_ok(VERIFY_WRITE, buf, count))
+#endif
 		return -EFAULT;
 
 	while (count)
@@ -1357,7 +1377,11 @@ static ssize_t dyplo_fifo_write_write (struct file *filp, const char __user *buf
 		return -EINVAL;
 
 	count &= ~0x03; /* Align to words */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 0, 0)
+	if (!access_ok(buf, count))
+#else
 	if (!access_ok(VERIFY_READ, buf, count))
+#endif
 		return -EFAULT;
 
 	while (count)

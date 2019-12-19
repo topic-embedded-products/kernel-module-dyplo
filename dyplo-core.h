@@ -67,6 +67,7 @@ struct dyplo_dev
 	u8 count_fifo_read_devices;
 	u8 number_of_dma_devices;
 	u8 icap_device_index;
+	u32 dma_addr_bits;
 };
 
 int dyplo_core_remove(struct device *device, struct dyplo_dev *dev);

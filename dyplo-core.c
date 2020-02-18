@@ -1554,32 +1554,20 @@ static void dyplo_dma_to_logic_enable(u32 __iomem *control_base, bool value)
 	dyplo_set_bits(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2), BIT(0), value);
 }
 
-static bool dyplo_dma_common_is_standalone_mode(struct dyplo_dma_dev *dma_dev)
-{
-	return !!(dyplo_reg_read_quick(dma_dev->config_parent->control_base,
-			DYPLO_DMA_STANDALONE_CONTROL) & BIT(0));
-}
-
 static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev);
 static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev);
 
-static void dyplo_dma_common_set_standalone_mode(struct dyplo_dma_dev *dma_dev, bool standalone)
+static void dyplo_dma_reset(struct dyplo_dma_dev *dma_dev)
 {
 	u32 __iomem *control_base = dma_dev->config_parent->control_base;
 
-	if (dyplo_dma_common_is_standalone_mode(dma_dev) == standalone)
-		return; /* Already in that mode */
-	pr_debug("%s: Switching to %s mode\n", __func__,
-		standalone ? "standalone" : "normal");
 	dyplo_dma_to_logic_enable(control_base, false);
 	dyplo_dma_from_logic_enable(control_base, false);
-	iowrite32(standalone ? BIT(0) : 0, control_base + (DYPLO_DMA_STANDALONE_CONTROL>>2));
-	if (!standalone) {
-		dyplo_dma_to_logic_enable(control_base, true);
-		dyplo_dma_to_logic_reset(dma_dev);
-		dyplo_dma_from_logic_enable(control_base, true);
-		dyplo_dma_from_logic_reset(dma_dev);
-	}
+
+	dyplo_dma_to_logic_enable(control_base, true);
+	dyplo_dma_to_logic_reset(dma_dev);
+	dyplo_dma_from_logic_enable(control_base, true);
+	dyplo_dma_from_logic_reset(dma_dev);
 }
 
 /* Kills ongoing DMA transactions and resets everything. */
@@ -1729,6 +1717,7 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 		} else {
 			dma_dev->open_mode |= FMODE_WRITE; /* Set in-use bits */
 		}
+
 		filp->f_op = &dyplo_dma_to_logic_fops;
 		/* Reset usersignal */
 		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
@@ -1759,7 +1748,7 @@ static int dyplo_dma_common_release(struct file *filp, mode_t flag_to_clear)
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
 	if (dma_dev->open_mode & FMODE_EXCL) {
-		dyplo_dma_common_set_standalone_mode(dma_dev, false);
+		dyplo_dma_reset(dma_dev);
 		dma_dev->open_mode = 0; /* Closes both ends */
 	} else
 		dma_dev->open_mode &= ~flag_to_clear; /* Clear in use bit */
@@ -2261,8 +2250,7 @@ static int dyplo_dma_common_block_free(struct dyplo_dma_dev *dma_dev,
 static int dyplo_dma_to_logic_block_free(struct dyplo_dma_dev *dma_dev)
 {
 	/* Reset the device to release all resources */
-	if (!dyplo_dma_common_is_standalone_mode(dma_dev))
-		dyplo_dma_to_logic_reset(dma_dev);
+	dyplo_dma_to_logic_reset(dma_dev);
 	return dyplo_dma_common_block_free(dma_dev, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 }
 
@@ -2386,35 +2374,6 @@ static int dyplo_dma_common_block_alloc(struct dyplo_dma_dev *dma_dev,
 			return ret;
 		}
 	}
-	return 0;
-}
-
-static int dyplo_dma_standalone_block_alloc(struct dyplo_dma_dev *dma_dev,
-	u32 size, u32 count)
-{
-	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-	struct dyplo_dma_configuration_req request;
-	int ret;
-
-	/* Standalone mode not supported for >32bit address DMA node */
-	if (dma_dev->dma_addr_bits > 32)
-		pr_err("%s DMA Standalone mode not supported for address bus > 32 bits\n", __func__);
-		return -EINVAL;
-
-	if (count > 255)
-		return -EINVAL;
-	/* Needs a contiguous single block. */
-	request.mode = DYPLO_DMA_MODE_STANDALONE;
-	request.size = size * count;
-	request.count = 1;
-	ret = dyplo_dma_common_block_alloc(dma_dev, &request, &dma_dev->dma_to_logic_blocks, DMA_BIDIRECTIONAL);
-	if (ret)
-		return ret;
-	/* Configure the DMA node */
-	iowrite32(dma_dev->dma_to_logic_blocks.blocks[0].phys_addr, control_base + (DYPLO_DMA_STANDALONE_STARTADDR>>2));
-	iowrite32(size, control_base + (DYPLO_DMA_STANDALONE_BLOCKSIZE>>2));
-	iowrite32(BIT(0) | (count << 8), control_base + (DYPLO_DMA_STANDALONE_CONTROL>>2));
-
 	return 0;
 }
 
@@ -2640,24 +2599,17 @@ static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 
 	switch (request.mode) {
 		case DYPLO_DMA_MODE_STANDALONE:
-			/* Device must be open in special mode */
-			if (!(dma_dev->open_mode & FMODE_EXCL))
-				return -EACCES;
-			/* Clean up the "from" side as well */
-			dyplo_dma_from_logic_block_free(dma_dev);
-			dyplo_dma_common_set_standalone_mode(dma_dev, true);
-			ret = dyplo_dma_standalone_block_alloc(dma_dev,
-				request.size, request.count);
+			ret = -EACCES; /* Standalone mode not supported anymore */
 			break;
 		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
-			dyplo_dma_common_set_standalone_mode(dma_dev, false);
+			dyplo_dma_reset(dma_dev);
 			request.size = dma_dev->dma_to_logic_block_size;
 			request.count = dma_dev->dma_to_logic_memory_size / dma_dev->dma_to_logic_block_size;
 			ret = 0;
 			break;
 		case DYPLO_DMA_MODE_BLOCK_COHERENT:
 		case DYPLO_DMA_MODE_BLOCK_STREAMING:
-			dyplo_dma_common_set_standalone_mode(dma_dev, false);
+			dyplo_dma_reset(dma_dev);
 			ret = dyplo_dma_common_block_alloc(dma_dev,
 				&request, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 			break;
@@ -2668,81 +2620,6 @@ static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 		return ret;
 
 	if (copy_to_user(arg, &request, sizeof(request)))
-		return -EFAULT;
-
-	return 0;
-}
-
-static long dyplo_dma_standalone_enable(
-	struct dyplo_dma_dev *dma_dev,
-	enum dma_data_direction direction,
-	bool enable)
-{
-	u32 __iomem *ctrl_reg = dma_dev->config_parent->control_base;
-	ctrl_reg += (direction == DMA_TO_DEVICE) ? DYPLO_DMA_TOLOGIC_CONTROL>>2 : DYPLO_DMA_FROMLOGIC_CONTROL>>2;
-
-	dyplo_set_bits(ctrl_reg, BIT(0), enable);
-
-	return 0;
-}
-
-static long dyplo_dma_standalone_setconfig(
-	struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_standalone_config __user *arg,
-	enum dma_data_direction direction)
-{
-	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-	struct dyplo_dma_standalone_config cfg;
-	u32 *cfg_ptr = (u32*)&cfg;
-	u8 i;
-
-	if (copy_from_user(&cfg, arg, sizeof(cfg)))
-		return -EFAULT;
-
-	switch (direction) {
-		case DMA_TO_DEVICE:
-			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
-				dyplo_reg_write_quick_index(control_base, DYPLO_DMA_STANDALONE_TOLOGIC_BASE, i, cfg_ptr[i]);
-			}
-			break;
-		case DMA_FROM_DEVICE:
-			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
-				dyplo_reg_write_quick_index(control_base, DYPLO_DMA_STANDALONE_FROMLOGIC_BASE, i, cfg_ptr[i]);
-			}
-			break;
-		default:
-			return -EINVAL;
-	}
-
-	return 0;
-}
-
-static long dyplo_dma_standalone_getconfig(
-	struct dyplo_dma_dev *dma_dev,
-	struct dyplo_dma_standalone_config __user *arg,
-	enum dma_data_direction direction)
-{
-	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-	struct dyplo_dma_standalone_config cfg;
-	u32 *cfg_ptr = (u32*)&cfg;
-	u8 i;
-
-	switch (direction) {
-		case DMA_TO_DEVICE:
-			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
-				cfg_ptr[i] = dyplo_reg_read_quick_index(control_base, DYPLO_DMA_STANDALONE_TOLOGIC_BASE, i);
-			}
-			break;
-		case DMA_FROM_DEVICE:
-			for (i = 0; i < (sizeof(cfg) / sizeof(u32)); ++i) {
-				cfg_ptr[i] = dyplo_reg_read_quick_index(control_base, DYPLO_DMA_STANDALONE_FROMLOGIC_BASE, i);
-			}
-			break;
-		default:
-			return -EINVAL;
-	}
-
-	if (copy_to_user(arg, &cfg, sizeof(cfg)))
 		return -EFAULT;
 
 	return 0;
@@ -2807,32 +2684,6 @@ static long dyplo_dma_to_logic_ioctl(struct file *filp, unsigned int cmd, unsign
 			return dyplo_dma_to_logic_block_dequeue(dma_dev,
 				(struct dyplo_buffer_block __user *)arg,
 				(filp->f_flags & O_NONBLOCK) == 0);
-		case DYPLO_IOC_DMASTANDALONE_CONFIGURE_TO_LOGIC:
-			if (_IOC_DIR(cmd) & _IOC_WRITE)
-				return dyplo_dma_standalone_setconfig(dma_dev,
-					(struct dyplo_dma_standalone_config __user *)arg,
-					DMA_TO_DEVICE);
-			if (_IOC_DIR(cmd) & _IOC_READ)
-				return dyplo_dma_standalone_getconfig(dma_dev,
-					(struct dyplo_dma_standalone_config __user *)arg,
-					DMA_TO_DEVICE);
-		case DYPLO_IOC_DMASTANDALONE_CONFIGURE_FROM_LOGIC:
-			if (_IOC_DIR(cmd) & _IOC_WRITE)
-				return dyplo_dma_standalone_setconfig(dma_dev,
-					(struct dyplo_dma_standalone_config __user *)arg,
-					DMA_FROM_DEVICE);
-			if (_IOC_DIR(cmd) & _IOC_READ)
-				return dyplo_dma_standalone_getconfig(dma_dev,
-					(struct dyplo_dma_standalone_config __user *)arg,
-					DMA_FROM_DEVICE);
-		case DYPLO_IOC_DMASTANDALONE_START_TO_LOGIC:
-			return dyplo_dma_standalone_enable(dma_dev, DMA_TO_DEVICE, true);
-		case DYPLO_IOC_DMASTANDALONE_START_FROM_LOGIC:
-			return dyplo_dma_standalone_enable(dma_dev, DMA_FROM_DEVICE, true);
-		case DYPLO_IOC_DMASTANDALONE_STOP_TO_LOGIC:
-			return dyplo_dma_standalone_enable(dma_dev, DMA_TO_DEVICE, false);
-		case DYPLO_IOC_DMASTANDALONE_STOP_FROM_LOGIC:
-			return dyplo_dma_standalone_enable(dma_dev, DMA_FROM_DEVICE, false);
 		default:
 			return -ENOTTY;
 	}
@@ -3027,7 +2878,7 @@ static int dyplo_dma_from_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 
 	switch (request.mode) {
 		case DYPLO_DMA_MODE_STANDALONE:
-			ret = -EACCES; /* Must open in read+write mode for this */
+			ret = -EACCES; /* Standalone mode not supported anymore */
 			break;
 		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
 			request.size = dma_dev->dma_from_logic_block_size;
@@ -3586,45 +3437,38 @@ static void dyplo_proc_show_dma(struct seq_file *m, struct dyplo_config_dev *cfg
 		return;
 	}
 
-	status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_STANDALONE_CONTROL);
-	if (status & BIT(0)) {
-		seq_printf(m, "  STANDALONE: nb=%u ", (status >> 8) & 0xFF);
-		status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_STANDALONE_BLOCKSIZE);
-		seq_printf(m, "bs=%u\n", status);
-	} else {
-		seq_printf(m, "  CPU to PL (%c):",
-			(dma_dev->open_mode & FMODE_WRITE) ? 'w' : '-');
-		if (dma_dev->dma_to_logic_blocks.blocks)
-			seq_printf(m, " cnt=%u sz=%u fl=%#x",
-				dma_dev->dma_to_logic_blocks.count,
-				dma_dev->dma_to_logic_blocks.size,
-				dma_dev->dma_to_logic_blocks.flags);
-		else
-			seq_printf(m, " sz=%u hd=%u tl=%u",
-				dma_dev->dma_to_logic_memory_size,
-				dma_dev->dma_to_logic_head,
-				dma_dev->dma_to_logic_tail);
-		status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_TOLOGIC_STATUS);
-		seq_printf(m, " re=%u fr=%u idle=%c\n",
-			status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
+	seq_printf(m, "  CPU to PL (%c):",
+		(dma_dev->open_mode & FMODE_WRITE) ? 'w' : '-');
+	if (dma_dev->dma_to_logic_blocks.blocks)
+		seq_printf(m, " cnt=%u sz=%u fl=%#x",
+			dma_dev->dma_to_logic_blocks.count,
+			dma_dev->dma_to_logic_blocks.size,
+			dma_dev->dma_to_logic_blocks.flags);
+	else
+		seq_printf(m, " sz=%u hd=%u tl=%u",
+			dma_dev->dma_to_logic_memory_size,
+			dma_dev->dma_to_logic_head,
+			dma_dev->dma_to_logic_tail);
+	status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_TOLOGIC_STATUS);
+	seq_printf(m, " re=%u fr=%u idle=%c\n",
+		status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 
-		seq_printf(m, "  PL to CPU (%c):",
-			(dma_dev->open_mode & FMODE_READ) ? 'r' : '-');
-		if (dma_dev->dma_from_logic_blocks.blocks)
-			seq_printf(m, " cnt=%u sz=%u fl=%#x",
-				dma_dev->dma_from_logic_blocks.count,
-				dma_dev->dma_from_logic_blocks.size,
-				dma_dev->dma_from_logic_blocks.flags);
-		else
-			seq_printf(m, " sz=%u hd=%u tl=%u full=%c",
-				dma_dev->dma_from_logic_memory_size,
-				dma_dev->dma_from_logic_head,
-				dma_dev->dma_from_logic_tail,
-				dma_dev->dma_from_logic_full ? 'Y':'N');
-		status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_FROMLOGIC_STATUS);
-		seq_printf(m, " re=%u fr=%u idle=%c\n",
-			status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
-	}
+	seq_printf(m, "  PL to CPU (%c):",
+		(dma_dev->open_mode & FMODE_READ) ? 'r' : '-');
+	if (dma_dev->dma_from_logic_blocks.blocks)
+		seq_printf(m, " cnt=%u sz=%u fl=%#x",
+			dma_dev->dma_from_logic_blocks.count,
+			dma_dev->dma_from_logic_blocks.size,
+			dma_dev->dma_from_logic_blocks.flags);
+	else
+		seq_printf(m, " sz=%u hd=%u tl=%u full=%c",
+			dma_dev->dma_from_logic_memory_size,
+			dma_dev->dma_from_logic_head,
+			dma_dev->dma_from_logic_tail,
+			dma_dev->dma_from_logic_full ? 'Y':'N');
+	status = dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_DMA_FROMLOGIC_STATUS);
+	seq_printf(m, " re=%u fr=%u idle=%c\n",
+		status >> 24, (status >> 16) & 0xFF, (status & 0x01) ? 'Y' : 'N');
 }
 
 

@@ -55,20 +55,8 @@ struct dyplo_buffer_block {
 	__u16 state; /* Who's owner of the buffer */
 };
 
-struct dyplo_dma_standalone_config {
-	__u32 offset;
-	__u32 burst_size;
-	__u32 incr_a;
-	__u32 iterations_a;
-	__u32 incr_b;
-	__u32 iterations_b;
-	__u32 incr_c;
-	__u32 iterations_c;
-};
-
-/* DMA not used for CPU-logic transfers at all, only for logic
- * storage. Buffer can be mmap'ed for inspection. */
-#define DYPLO_DMA_MODE_STANDALONE	0
+/* This STANDALONE mode is not supported anymore */
+#define DYPLO_DMA_MODE_STANDALONE 0
 /* (default) Copies data from userspace into a kernel buffer and
  * vice versa. */
 #define DYPLO_DMA_MODE_RINGBUFFER_BOUNCE	1
@@ -117,12 +105,6 @@ struct dyplo_dma_configuration_req {
 #define DYPLO_IOC_DMABLOCK_QUERY	0x22
 #define DYPLO_IOC_DMABLOCK_ENQUEUE	0x23
 #define DYPLO_IOC_DMABLOCK_DEQUEUE	0x24
-#define DYPLO_IOC_DMASTANDALONE_CONFIGURE_TO_LOGIC	0x28
-#define DYPLO_IOC_DMASTANDALONE_CONFIGURE_FROM_LOGIC	0x29
-#define DYPLO_IOC_DMASTANDALONE_START_TO_LOGIC	0x2A
-#define DYPLO_IOC_DMASTANDALONE_START_FROM_LOGIC	0x2B
-#define DYPLO_IOC_DMASTANDALONE_STOP_TO_LOGIC	0x2C
-#define DYPLO_IOC_DMASTANDALONE_STOP_FROM_LOGIC	0x2D
 
 #define DYPLO_IOC_LICENSE_KEY	0x30
 #define DYPLO_IOC_STATIC_ID	0x31
@@ -193,16 +175,6 @@ struct dyplo_dma_configuration_req {
 #define DYPLO_IOCDMABLOCK_QUERY	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_QUERY, struct dyplo_buffer_block)
 #define DYPLO_IOCDMABLOCK_ENQUEUE	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_ENQUEUE, struct dyplo_buffer_block)
 #define DYPLO_IOCDMABLOCK_DEQUEUE	_IOWR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMABLOCK_DEQUEUE, struct dyplo_buffer_block)
-
-/* Standalone DMA configuration and control */
-#define DYPLO_IOCSDMASTANDALONE_CONFIGURE_TO_LOGIC	_IOW(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_CONFIGURE_TO_LOGIC, struct dyplo_dma_standalone_config)
-#define DYPLO_IOCGDMASTANDALONE_CONFIGURE_TO_LOGIC	_IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_CONFIGURE_TO_LOGIC, struct dyplo_dma_standalone_config)
-#define DYPLO_IOCSDMASTANDALONE_CONFIGURE_FROM_LOGIC	_IOW(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_CONFIGURE_FROM_LOGIC, struct dyplo_dma_standalone_config)
-#define DYPLO_IOCGDMASTANDALONE_CONFIGURE_FROM_LOGIC	_IOR(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_CONFIGURE_FROM_LOGIC, struct dyplo_dma_standalone_config)
-#define DYPLO_IOCDMASTANDALONE_START_TO_LOGIC   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_START_TO_LOGIC)
-#define DYPLO_IOCDMASTANDALONE_START_FROM_LOGIC   _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_START_FROM_LOGIC)
-#define DYPLO_IOCDMASTANDALONE_STOP_TO_LOGIC  _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_STOP_TO_LOGIC)
-#define DYPLO_IOCDMASTANDALONE_STOP_FROM_LOGIC  _IO(DYPLO_IOC_MAGIC, DYPLO_IOC_DMASTANDALONE_STOP_FROM_LOGIC)
 
 /* Read or write a 64-bit license key */
 #define DYPLO_IOCSLICENSE_KEY   _IOW(DYPLO_IOC_MAGIC, DYPLO_IOC_LICENSE_KEY, unsigned long long)

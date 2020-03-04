@@ -1793,12 +1793,12 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 				dyplo_dma_get_index(dma_dev), num_results);
 			BUG();
 		}
-		pr_debug("%s addr=0x%llx wip=0x%llx,%u\n", __func__, addr, op.addr, op.size);
+		pr_debug("%s addr=0x%llx wip=0x%llx,%u\n", __func__, (u64)addr, (u64)op.addr, op.size);
 		if (unlikely(op.addr != addr)) {
 			pr_err("Mismatch in result of DMA node %u: phys=%pa expected 0x%llx (size %d) actual 0x%llx\n",
 				dyplo_dma_get_index(dma_dev),
 				&dma_dev->dma_to_logic_handle,
-				(dma_addr_t)op.addr, op.size, addr);
+				(u64)op.addr, op.size, (u64)addr);
 			pr_err("head=%#x (%d) tail=%#x (%d)\n",
 				dma_dev->dma_to_logic_head,
 				dma_dev->dma_to_logic_head,
@@ -1807,13 +1807,13 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 			for (;;) {
 				if (!kfifo_get(&dma_dev->dma_to_logic_wip, &op))
 					break;
-				pr_err("Internal entry: 0x%llx (size %d)\n", (dma_addr_t)op.addr, op.size);
+				pr_err("Internal entry: 0x%llx (size %d)\n", (u64)op.addr, op.size);
 			}
 			while (num_results) {
 				dma_addr_t addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_LOW);
 				if (dma_dev->dma_addr_bits > 32)
 					addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
-				pr_err("Logic result: 0x%llx\n", (dma_addr_t)addr);
+				pr_err("Logic result: 0x%llx\n", (u64)addr);
 				--num_results;
 			}
 			BUG();
@@ -1982,7 +1982,7 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 		if (!num_free_entries)
 			break; /* No more room for commands */
 		pr_debug("%s sending addr=0x%llx size=%u\n", __func__,
-			(dma_addr_t)dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dma_dev->dma_from_logic_block_size);
+			(u64)dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dma_dev->dma_from_logic_block_size);
 		iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) & 0xFFFFFFFF, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_LOW>>2));
 		if (dma_dev->dma_addr_bits > 32)
 			iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) >> 32, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
@@ -2448,8 +2448,8 @@ static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 	/* This operation never blocks, unless something is wrong in HW */
 	if (!(dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_STATUS) & 0xFF0000))
 		return -EWOULDBLOCK;
-	pr_debug("%s sending addr=%#x size=%u\n", __func__,
-			(unsigned int)block->phys_addr, block->data.bytes_used);
+	pr_debug("%s sending addr=%#llx size=%u\n", __func__,
+			(u64)block->phys_addr, block->data.bytes_used);
 	iowrite32_quick(block->phys_addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_LOW>>2));
 	if (dma_dev->dma_addr_bits > 32)
 		iowrite32_quick(block->phys_addr >> 32, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_HIGH>>2));
@@ -2508,7 +2508,7 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 		start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
 
 	if (start_addr != block->phys_addr) {
-		pr_err("%s Expected addr 0x%llx result 0x%llx\n", __func__, (dma_addr_t)block->phys_addr, (dma_addr_t)start_addr);
+		pr_err("%s Expected addr 0x%llx result 0x%llx\n", __func__, (u64)block->phys_addr, (u64)start_addr);
 		return -EIO;
 	}
 
@@ -2777,7 +2777,7 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 
 	/* Send to logic */
 	pr_debug("%s sending addr=0x%llx size=%u\n", __func__,
-			(dma_addr_t)block->phys_addr, block->data.size);
+			(u64)block->phys_addr, block->data.size);
 	iowrite32(block->phys_addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_LOW>>2));
 	if (dma_dev->dma_addr_bits > 32)
 		iowrite32(block->phys_addr >> 32, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
@@ -2837,7 +2837,7 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 	if (dma_dev->dma_addr_bits > 32)
 		start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_HIGH) << 32);
 	if (start_addr != block->phys_addr) {
-		pr_err("%s Expected addr 0x%llx result 0x%llx\n", __func__, (dma_addr_t)block->phys_addr, (dma_addr_t)start_addr);
+		pr_err("%s Expected addr 0x%llx result 0x%llx\n", __func__, (u64)block->phys_addr, (u64)start_addr);
 		return -EIO;
 	}
 	block->data.user_signal = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_USERBITS);

@@ -200,7 +200,7 @@ struct dyplo_dma_dev
 	wait_queue_head_t wait_queue_from_logic;
 	struct dyplo_dma_from_logic_operation dma_from_logic_current_op;
 	bool dma_from_logic_full;
-	u32 dma_addr_bits;
+	bool dma_64bit;
 };
 
 union dyplo_route_item_u {
@@ -1771,7 +1771,7 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 		/* Fetch result from queue */
 		struct dyplo_dma_to_logic_operation op;
 		dma_addr_t addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_LOW);
-		if (dma_dev->dma_addr_bits > 32)
+		if (dma_dev->dma_64bit)
 			addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
 		if (unlikely(!kfifo_get(&dma_dev->dma_to_logic_wip, &op))) {
 			pr_err("Nothing in fifo of DMA node %u but still %u results\n",
@@ -1796,7 +1796,7 @@ static unsigned int dyplo_dma_to_logic_avail(struct dyplo_dma_dev *dma_dev)
 			}
 			while (num_results) {
 				dma_addr_t addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_LOW);
-				if (dma_dev->dma_addr_bits > 32)
+				if (dma_dev->dma_64bit)
 					addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
 				pr_err("Logic result: 0x%llx\n", (u64)addr);
 				--num_results;
@@ -1919,7 +1919,7 @@ static ssize_t dyplo_dma_write(struct file *filp, const char __user *buf,
 		pr_debug("%s sending addr=%#x size=%u\n", __func__,
 			(unsigned int)dma_op.addr, dma_op.size);
 		iowrite32_quick(dma_op.addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_LOW>>2));
-		if (dma_dev->dma_addr_bits > 32)
+		if (dma_dev->dma_64bit)
 			iowrite32_quick(dma_op.addr >> 32, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_HIGH>>2));
 		iowrite32(dma_op.size, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
 		if (unlikely(kfifo_put(&dma_dev->dma_to_logic_wip, dma_op) == 0)) {
@@ -1969,7 +1969,7 @@ static unsigned int dyplo_dma_from_logic_pump(struct dyplo_dma_dev *dma_dev)
 		pr_debug("%s sending addr=0x%llx size=%u\n", __func__,
 			(u64)dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head, dma_dev->dma_from_logic_block_size);
 		iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) & 0xFFFFFFFF, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_LOW>>2));
-		if (dma_dev->dma_addr_bits > 32)
+		if (dma_dev->dma_64bit)
 			iowrite32((dma_dev->dma_from_logic_handle + dma_dev->dma_from_logic_head) >> 32, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
 		iowrite32(dma_dev->dma_from_logic_block_size, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
 		dma_dev->dma_from_logic_head += dma_dev->dma_from_logic_block_size;
@@ -2012,7 +2012,7 @@ static ssize_t dyplo_dma_read(struct file *filp, char __user *buf, size_t count,
 			/* Fetch a new operation from logic */
 			if (results_avail) {
 				dma_addr_t start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_LOW);
-				if (dma_dev->dma_addr_bits > 32)
+				if (dma_dev->dma_64bit)
 					start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_HIGH) << 32);
 				tail = start_addr - dma_dev->dma_from_logic_handle;
 				current_op->addr = ((char*)dma_dev->dma_from_logic_memory) + tail;
@@ -2436,7 +2436,7 @@ static int dyplo_dma_to_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 	pr_debug("%s sending addr=%#llx size=%u\n", __func__,
 			(u64)block->phys_addr, block->data.bytes_used);
 	iowrite32_quick(block->phys_addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_LOW>>2));
-	if (dma_dev->dma_addr_bits > 32)
+	if (dma_dev->dma_64bit)
 		iowrite32_quick(block->phys_addr >> 32, control_base + (DYPLO_DMA_TOLOGIC_STARTADDR_HIGH>>2));
 	iowrite32_quick(block->data.user_signal, control_base + (DYPLO_DMA_TOLOGIC_USERBITS>>2));
 	iowrite32(block->data.bytes_used, control_base + (DYPLO_DMA_TOLOGIC_BYTESIZE>>2));
@@ -2489,7 +2489,7 @@ static int dyplo_dma_to_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 			return -EAGAIN;
 	}
 	start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_LOW);
-	if (dma_dev->dma_addr_bits > 32)
+	if (dma_dev->dma_64bit)
 		start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_TOLOGIC_RESULT_ADDR_HIGH) << 32);
 
 	if (start_addr != block->phys_addr) {
@@ -2764,7 +2764,7 @@ static int dyplo_dma_from_logic_block_enqueue(struct dyplo_dma_dev *dma_dev,
 	pr_debug("%s sending addr=0x%llx size=%u\n", __func__,
 			(u64)block->phys_addr, block->data.size);
 	iowrite32(block->phys_addr & 0xFFFFFFFF, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_LOW>>2));
-	if (dma_dev->dma_addr_bits > 32)
+	if (dma_dev->dma_64bit)
 		iowrite32(block->phys_addr >> 32, control_base + (DYPLO_DMA_FROMLOGIC_STARTADDR_HIGH>>2));
 	iowrite32(request_bytes_used, control_base + (DYPLO_DMA_FROMLOGIC_BYTESIZE>>2));
 	block->data.bytes_used = 0;
@@ -2819,7 +2819,7 @@ static int dyplo_dma_from_logic_block_dequeue(struct dyplo_dma_dev *dma_dev,
 		finish_wait(&dma_dev->wait_queue_from_logic, &wait);
 
 	start_addr = dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_LOW);
-	if (dma_dev->dma_addr_bits > 32)
+	if (dma_dev->dma_64bit)
 		start_addr |= ((dma_addr_t)dyplo_reg_read_quick(control_base, DYPLO_DMA_FROMLOGIC_RESULT_ADDR_HIGH) << 32);
 	if (start_addr != block->phys_addr) {
 		pr_err("%s Expected addr 0x%llx result 0x%llx\n", __func__, (u64)block->phys_addr, (u64)start_addr);
@@ -3242,8 +3242,7 @@ static int create_sub_devices_dma_fifo(
 		goto failed_device_create;
 	}
 
-	/* Set width of addr bus */
-	dma_dev->dma_addr_bits = dev->dma_addr_bits;
+	dma_dev->dma_64bit = dev->dma_addr_bits > 32;
 
 	++dev->number_of_dma_devices;
 	/* Enable the DMA controller */
@@ -3603,7 +3602,13 @@ void dyplo_core_apply_license(struct dyplo_dev *dev, const void *data)
 
 static u32 dyplo_core_get_dma_addr_bus_width(struct dyplo_dev *dev)
 {
-  return dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DMA_ADDR_WIDTH);
+	u32 ret = dyplo_reg_read_quick(dev->base, DYPLO_REG_CONTROL_DMA_ADDR_WIDTH);
+
+	/* old logic may return 0 instead of 32 */
+	if (!ret)
+		ret = 32;
+
+	return ret;
 }
 
 int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)

@@ -176,7 +176,7 @@ struct dyplo_dma_dev
 {
 	struct dyplo_config_dev* config_parent;
 	struct cdev cdev_dma;
-	mode_t open_mode; /* FMODE_READ FMODE_WRITE FMODE_EXCL */
+	mode_t open_mode; /* FMODE_READ FMODE_WRITE */
 
 	struct dyplo_dma_block_set dma_to_logic_blocks;
 	struct dyplo_dma_block_set dma_from_logic_blocks;
@@ -1706,18 +1706,7 @@ static int dyplo_dma_open(struct inode *inode, struct file *filp)
 			status = -EBUSY;
 			goto exit_open;
 		}
-		/* Normally, RDWR means just write. If O_SYNC is specified, the
-		 * intention is to use standalone mode, which needs both ends */
-		if  (filp->f_flags & O_SYNC) {
-			if (dma_dev->open_mode & FMODE_READ) {
-				status = -EBUSY;
-				goto exit_open;
-			}
-			dma_dev->open_mode |= (FMODE_WRITE | FMODE_READ | FMODE_EXCL);
-		} else {
-			dma_dev->open_mode |= FMODE_WRITE; /* Set in-use bits */
-		}
-
+		dma_dev->open_mode |= FMODE_WRITE; /* Set in-use bits */
 		filp->f_op = &dyplo_dma_to_logic_fops;
 		/* Reset usersignal */
 		iowrite32_quick(DYPLO_USERSIGNAL_ZERO,
@@ -1747,11 +1736,7 @@ static int dyplo_dma_common_release(struct file *filp, mode_t flag_to_clear)
 	pr_debug("%s(mode=%#x %#x)\n", __func__, filp->f_mode, dma_dev->open_mode);
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
-	if (dma_dev->open_mode & FMODE_EXCL) {
-		dyplo_dma_reset(dma_dev);
-		dma_dev->open_mode = 0; /* Closes both ends */
-	} else
-		dma_dev->open_mode &= ~flag_to_clear; /* Clear in use bit */
+	dma_dev->open_mode &= ~flag_to_clear; /* Clear in use bit */
 	up(&dev->fop_sem);
 	return 0;
 }
@@ -2599,7 +2584,7 @@ static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 
 	switch (request.mode) {
 		case DYPLO_DMA_MODE_STANDALONE:
-			ret = -EACCES; /* Standalone mode not supported anymore */
+			ret = -EINVAL;
 			break;
 		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
 			dyplo_dma_reset(dma_dev);
@@ -2878,7 +2863,7 @@ static int dyplo_dma_from_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 
 	switch (request.mode) {
 		case DYPLO_DMA_MODE_STANDALONE:
-			ret = -EACCES; /* Standalone mode not supported anymore */
+			ret = -EINVAL;
 			break;
 		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
 			request.size = dma_dev->dma_from_logic_block_size;

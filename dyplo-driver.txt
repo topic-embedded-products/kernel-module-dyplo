@@ -77,16 +77,18 @@ ctl_index=0 (--) type=2 (CPU) id=0x1010101 fifos in=4 out=4
   Node information: Node type is 2, a CPU FIFO. Number of incoming (4) and
   outgoing (4, seen from the node) streams.
 fifo=11 w=255 0 (  3.i) r=   0 0 (   0w.)
-           ^                 ^         ^- Interrupt active (no)
-           |                 |        ^-- Currently waiting for interrupt
-           |                 |      ^---- Interrupt treshold
-           |                 | ^- User bits
-           |                 +---- Number of words available in read buffer
-           |         ^- Interrupt active (yes)
-           |        ^-- Currently waiting for interrupt (no)
-           |      ^---- Interrupt treshold
+           ^      ^          ^         ^- Interrupt active (no)
+           |      |          |        ^-- Currently waiting for interrupt
+           |      |          |      ^---- Interrupt treshold
+           |      |          | ^- User bits
+           |      |          +--- Number of words available in read buffer
+           |      |     ^-------- "R" if open for reading, "r" if not open
+           |      |  ^- Interrupt active (yes)
+           |      | ^-- Currently waiting for interrupt (no)
+           |      +---- Interrupt treshold
            |  ^- User bits
            +---- Number of words available in write buffer
+        ^------ "W" if currently open for writing, "w" otherwise
      ^- Index of stream
 route 0,1 -> 2,0                                                                
   Route assignment. Displays outgoing fifo control node and index, and

@@ -29,8 +29,11 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/pci-aspm.h>
 #include <linux/slab.h>
+#include <linux/version.h>
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,4,0)
+# include <linux/pci-aspm.h>
+#endif
 #include "dyplo-core.h"
 
 MODULE_LICENSE("GPL");

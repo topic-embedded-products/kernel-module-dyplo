@@ -1597,9 +1597,11 @@ static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev)
 	return result;
 }
 
-/* Forward declaration */
+/* Forward declarations */
 static const struct file_operations dyplo_dma_to_logic_fops;
 static const struct file_operations dyplo_dma_from_logic_fops;
+static int dyplo_dma_to_logic_block_free(struct dyplo_dma_dev *dma_dev);
+static int dyplo_dma_from_logic_block_free(struct dyplo_dma_dev *dma_dev);
 
 static int dyplo_dma_open(struct inode *inode, struct file *filp)
 {
@@ -1650,27 +1652,38 @@ exit_open:
 	return status;
 }
 
-static int dyplo_dma_common_release(struct file *filp, mode_t flag_to_clear)
+static int dyplo_dma_common_release(struct dyplo_dma_dev *dma_dev, mode_t flag_to_clear)
 {
-	struct dyplo_dma_dev *dma_dev = filp->private_data;
 	struct dyplo_dev *dev = dma_dev->config_parent->parent;
 
-	pr_debug("%s(mode=%#x %#x)\n", __func__, filp->f_mode, dma_dev->open_mode);
 	if (down_interruptible(&dev->fop_sem))
 		return -ERESTARTSYS;
 	dma_dev->open_mode &= ~flag_to_clear; /* Clear in use bit */
 	up(&dev->fop_sem);
+
 	return 0;
 }
 
 static int dyplo_dma_to_logic_release(struct inode *inode, struct file *filp)
 {
-	return dyplo_dma_common_release(filp, FMODE_WRITE);
+	struct dyplo_dma_dev *dma_dev = filp->private_data;
+
+	/* If we were in "block" mode, release those resources now. */
+	if (dma_dev->dma_to_logic_blocks.blocks)
+		dyplo_dma_to_logic_block_free(dma_dev);
+
+	return dyplo_dma_common_release(dma_dev, FMODE_WRITE);
 }
 
 static int dyplo_dma_from_logic_release(struct inode *inode, struct file *filp)
 {
-	return dyplo_dma_common_release(filp, FMODE_READ);
+	struct dyplo_dma_dev *dma_dev = filp->private_data;
+
+	/* If we were in "block" mode, release those resources now. */
+	if (dma_dev->dma_from_logic_blocks.blocks)
+		dyplo_dma_from_logic_block_free(dma_dev);
+
+	return dyplo_dma_common_release(dma_dev, FMODE_READ);
 }
 
 /* CPU and DMA shouldn't be accessing the same cache line simultaneously.

@@ -1476,22 +1476,6 @@ static void dyplo_dma_to_logic_enable(u32 __iomem *control_base, bool value)
 	dyplo_set_bits(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2), BIT(0), value);
 }
 
-static int dyplo_dma_from_logic_reset(struct dyplo_dma_dev *dma_dev);
-static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev);
-
-static void dyplo_dma_reset(struct dyplo_dma_dev *dma_dev)
-{
-	u32 __iomem *control_base = dma_dev->config_parent->control_base;
-
-	dyplo_dma_to_logic_enable(control_base, false);
-	dyplo_dma_from_logic_enable(control_base, false);
-
-	dyplo_dma_to_logic_enable(control_base, true);
-	dyplo_dma_to_logic_reset(dma_dev);
-	dyplo_dma_from_logic_enable(control_base, true);
-	dyplo_dma_from_logic_reset(dma_dev);
-}
-
 /* Kills ongoing DMA transactions and resets everything. */
 static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 {
@@ -2522,14 +2506,12 @@ static int dyplo_dma_to_logic_reconfigure(struct dyplo_dma_dev *dma_dev,
 			ret = -EINVAL;
 			break;
 		case DYPLO_DMA_MODE_RINGBUFFER_BOUNCE:
-			dyplo_dma_reset(dma_dev);
 			request.size = dma_dev->dma_to_logic_block_size;
 			request.count = dma_dev->dma_to_logic_memory_size / dma_dev->dma_to_logic_block_size;
 			ret = 0;
 			break;
 		case DYPLO_DMA_MODE_BLOCK_COHERENT:
 		case DYPLO_DMA_MODE_BLOCK_STREAMING:
-			dyplo_dma_reset(dma_dev);
 			ret = dyplo_dma_common_block_alloc(dma_dev,
 				&request, &dma_dev->dma_to_logic_blocks, DMA_TO_DEVICE);
 			break;

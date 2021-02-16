@@ -1458,24 +1458,6 @@ static void dyplo_dma_from_logic_irq_enable(u32 __iomem *control_base)
 	iowrite32_quick(BIT(16), control_base + (DYPLO_REG_FIFO_IRQ_SET>>2));
 }
 
-static void dyplo_set_bits(u32 __iomem *reg_ptr, u32 mask, bool enable)
-{
-	u32 value = ioread32_quick(reg_ptr);
-	u32 next = enable ? (value | mask) : (value & ~mask);
-	if (next != value)
-		iowrite32(next, reg_ptr);
-}
-
-static void dyplo_dma_from_logic_enable(u32 __iomem *control_base, bool value)
-{
-	dyplo_set_bits(control_base + (DYPLO_DMA_FROMLOGIC_CONTROL>>2), BIT(0), value);
-}
-
-static void dyplo_dma_to_logic_enable(u32 __iomem *control_base, bool value)
-{
-	dyplo_set_bits(control_base + (DYPLO_DMA_TOLOGIC_CONTROL>>2), BIT(0), value);
-}
-
 /* Kills ongoing DMA transactions and resets everything. */
 static int dyplo_dma_to_logic_reset(struct dyplo_dma_dev *dma_dev)
 {

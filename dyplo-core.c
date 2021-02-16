@@ -228,7 +228,7 @@ static u8 dyplo_number_of_output_queues(const struct dyplo_config_dev *cfg_dev)
 	return (dyplo_reg_read_quick(cfg_dev->control_base, DYPLO_REG_NODE_INFO) >> 4) & 0x0F;
 }
 
-static ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
+ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
 	char __user *buf, size_t count, loff_t *f_pos)
 {
 	size_t offset;
@@ -263,8 +263,9 @@ static ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
 
 	return count;
 }
+EXPORT_SYMBOL(dyplo_generic_read);
 
-static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
+ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
 	const char __user *buf, size_t count, loff_t *f_pos)
 {
 	size_t offset;
@@ -302,6 +303,7 @@ static ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
 
 	return count;
 }
+EXPORT_SYMBOL(dyplo_generic_write);
 
 static int dyplo_ctl_open(struct inode *inode, struct file *filp)
 {

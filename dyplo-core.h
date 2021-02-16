@@ -75,3 +75,8 @@ int dyplo_core_remove(struct device *device, struct dyplo_dev *dev);
 int dyplo_core_probe(struct device *device, struct dyplo_dev *dev);
 
 void dyplo_core_apply_license(struct dyplo_dev *dev, const void *data);
+
+ssize_t dyplo_generic_read(const u32 __iomem *mapped_memory,
+	char __user *buf, size_t count, loff_t *f_pos);
+ssize_t dyplo_generic_write(u32 __iomem *mapped_memory,
+	const char __user *buf, size_t count, loff_t *f_pos);

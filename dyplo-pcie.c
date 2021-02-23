@@ -118,6 +118,7 @@ static void dyplo_pci_bar_initialize(struct device *device, void __iomem *regs)
 struct dyplo_drm {
 	dev_t devt;
 	u32 __iomem *base;
+	phys_addr_t mem_start;
 	struct cdev cdev_drm;
 };
 
@@ -142,6 +143,12 @@ static ssize_t dyplo_drm_write (struct file *filp, const char __user *buf,
 {
 	struct dyplo_drm *drm = filp->private_data;
 
+	if (*f_pos >= DYPLO_PCIE_DRM_SIZE)
+		return 0;
+
+	if (*f_pos + count >= DYPLO_PCIE_DRM_SIZE)
+		count = DYPLO_PCIE_DRM_SIZE - *f_pos;
+
 	return dyplo_generic_write(drm->base, buf, count, f_pos);
 }
 
@@ -149,6 +156,12 @@ static ssize_t dyplo_drm_read(struct file *filp, char __user *buf, size_t count,
 	loff_t *f_pos)
 {
 	struct dyplo_drm *drm = filp->private_data;
+
+	if (*f_pos >= DYPLO_PCIE_DRM_SIZE)
+		return 0;
+
+	if (*f_pos + count >= DYPLO_PCIE_DRM_SIZE)
+		count = DYPLO_PCIE_DRM_SIZE - *f_pos;
 
 	return dyplo_generic_read(drm->base, buf, count, f_pos);
 }
@@ -188,12 +201,10 @@ static int dyplo_drm_mmap(struct file *filp, struct vm_area_struct *vma)
 
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
-	return vm_iomap_memory(vma, virt_to_phys(drm->base),
-			DYPLO_PCIE_DRM_SIZE);
+	return vm_iomap_memory(vma, drm->mem_start, DYPLO_PCIE_DRM_SIZE);
 }
 
-static const struct file_operations dyplo_drm_fops =
-{
+static const struct file_operations dyplo_drm_fops = {
 	.owner = THIS_MODULE,
 	.read = dyplo_drm_read,
 	.write = dyplo_drm_write,
@@ -203,7 +214,8 @@ static const struct file_operations dyplo_drm_fops =
 	.release = dyplo_drm_release,
 };
 
-static int dyplo_drm_probe(struct dyplo_dev_pci *pci_dev, u32 __iomem *base)
+static int dyplo_drm_probe(
+	struct dyplo_dev_pci *pci_dev, phys_addr_t mem_start, u32 __iomem *base)
 {
 	struct device *device = pci_dev->dyplo_dev.device;
 	struct device *char_device;
@@ -214,6 +226,7 @@ static int dyplo_drm_probe(struct dyplo_dev_pci *pci_dev, u32 __iomem *base)
 		return -ENOMEM;
 
 	pci_dev->drm->base = base;
+	pci_dev->drm->mem_start = mem_start;
 
 	/* Create /dev/dyplo.. devices */
 	retval = alloc_chrdev_region(&pci_dev->drm->devt, 0, 1, "dyplo");
@@ -323,8 +336,10 @@ static int dyplo_pci_probe(struct pci_dev *pdev,
 
 	if (ent->driver_data == DYPLO_PCI_TYPE_WITH_DRM) {
 		rc = dyplo_drm_probe(pci_dev,
-			(u32 __iomem *)(
-				(u8 __iomem *)pcie_regs + DYPLO_PCIE_DRM_OFFSET));
+			pci_resource_start(pdev, DYPLO_PCIE_BAR) +
+				DYPLO_PCIE_DRM_OFFSET,
+			(u32 __iomem *)((u8 __iomem *)pcie_regs +
+				DYPLO_PCIE_DRM_OFFSET));
 		if (rc)
 			dev_err(device, "Failed to initialize DRM: %d\n", rc);
 	}

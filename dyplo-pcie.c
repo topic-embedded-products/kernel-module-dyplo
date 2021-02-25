@@ -56,8 +56,8 @@ MODULE_DESCRIPTION("Driver for Topic Dyplo PCIe device");
 #define DYPLO_PCI_TYPE_WITHOUT_DRM	0
 #define DYPLO_PCI_TYPE_WITH_DRM		1
 
-#define DYPLO_PCIE_DRM_OFFSET		0x1000
-#define DYPLO_PCIE_DRM_SIZE		0x1000
+#define DYPLO_PCIE_DRM_OFFSET		0x10000
+#define DYPLO_PCIE_DRM_SIZE		0x10000
 
 static const struct pci_device_id dyplo_pci_ids[] = {
 	{

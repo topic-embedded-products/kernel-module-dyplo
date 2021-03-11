@@ -133,68 +133,6 @@ static int dyplo_drm_open(struct inode *inode, struct file *filp)
 	return status;
 }
 
-static int dyplo_drm_release(struct inode *inode, struct file *filp)
-{
-	return 0;
-}
-
-static ssize_t dyplo_drm_write (struct file *filp, const char __user *buf,
-	size_t count, loff_t *f_pos)
-{
-	struct dyplo_drm *drm = filp->private_data;
-
-	if (*f_pos >= DYPLO_PCIE_DRM_SIZE)
-		return 0;
-
-	if (*f_pos + count >= DYPLO_PCIE_DRM_SIZE)
-		count = DYPLO_PCIE_DRM_SIZE - *f_pos;
-
-	return dyplo_generic_write(drm->base, buf, count, f_pos);
-}
-
-static ssize_t dyplo_drm_read(struct file *filp, char __user *buf, size_t count,
-	loff_t *f_pos)
-{
-	struct dyplo_drm *drm = filp->private_data;
-
-	if (*f_pos >= DYPLO_PCIE_DRM_SIZE)
-		return 0;
-
-	if (*f_pos + count >= DYPLO_PCIE_DRM_SIZE)
-		count = DYPLO_PCIE_DRM_SIZE - *f_pos;
-
-	return dyplo_generic_read(drm->base, buf, count, f_pos);
-}
-
-static loff_t dyplo_drm_llseek(struct file *filp, loff_t off, int whence)
-{
-	loff_t newpos;
-
-	switch(whence) {
-	case 0: /* SEEK_SET */
-		newpos = off;
-		break;
-	case 1: /* SEEK_CUR */
-		newpos = filp->f_pos + off;
-		break;
-	case 2: /* SEEK_END */
-		newpos = DYPLO_PCIE_DRM_SIZE + off;
-		break;
-	default: /* can't happen */
-		return -EINVAL;
-	}
-
-	if (newpos < 0)
-		return -EINVAL;
-
-	if (newpos > DYPLO_PCIE_DRM_SIZE)
-		return -EINVAL;
-
-	filp->f_pos = newpos;
-
-	return newpos;
-}
-
 static int dyplo_drm_mmap(struct file *filp, struct vm_area_struct *vma)
 {
 	struct dyplo_drm *drm = filp->private_data;
@@ -206,12 +144,9 @@ static int dyplo_drm_mmap(struct file *filp, struct vm_area_struct *vma)
 
 static const struct file_operations dyplo_drm_fops = {
 	.owner = THIS_MODULE,
-	.read = dyplo_drm_read,
-	.write = dyplo_drm_write,
-	.llseek = dyplo_drm_llseek,
+	.llseek = no_llseek,
 	.mmap = dyplo_drm_mmap,
 	.open = dyplo_drm_open,
-	.release = dyplo_drm_release,
 };
 
 static int dyplo_drm_probe(

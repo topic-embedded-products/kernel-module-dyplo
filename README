@@ -31,11 +31,13 @@ To install on a local machine, just run:
   sudo depmod -A
 
 
-
 CONFIGURATION
 
 On PCIe, no configuration is required, any PCIe card with Dyplo on it
 will automatically trigger loading the dyplo-pcie driver.
+However, the generated device files will not have the right permissions by 
+default. To fix this, copy the dyplo.rules file to the /etc/udev/rules.d folder.
+Keep in mind that this is an 'example' rules file that gives everybody access.
 
 On embedded platforms like the Zynq, the module requires a devicetree
 entry. Add a snippet like the following to your dts file:

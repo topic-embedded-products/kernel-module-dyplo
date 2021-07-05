@@ -3353,6 +3353,14 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
      return single_open(file, dyplo_proc_show, PDE_DATA(inode));
  }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
+static const struct proc_ops dyplo_proc_fops = {
+	.proc_open	= dyplo_proc_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+};
+#else
 static const struct file_operations dyplo_proc_fops = {
 	.owner	= THIS_MODULE,
 	.open	= dyplo_proc_open,
@@ -3360,6 +3368,7 @@ static const struct file_operations dyplo_proc_fops = {
 	.llseek	= seq_lseek,
 	.release = single_release,
 };
+#endif
 
 static int dyplo_core_check_version(struct device *device, struct dyplo_dev *dev)
 {

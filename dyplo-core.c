@@ -3348,10 +3348,13 @@ static int dyplo_proc_show(struct seq_file *m, void *offset)
 	return 0;
 }
 
- static int dyplo_proc_open(struct inode *inode, struct file *file)
- {
-     return single_open(file, dyplo_proc_show, PDE_DATA(inode));
- }
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+#    define PDE_DATA(i) pde_data(i)
+#endif
+static int dyplo_proc_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, dyplo_proc_show, PDE_DATA(inode));
+}
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
 static const struct proc_ops dyplo_proc_fops = {

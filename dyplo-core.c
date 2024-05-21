@@ -2336,7 +2336,11 @@ static int dyplo_dma_common_mmap(struct dyplo_dma_dev *dma_dev,
 
 	pr_debug("%s offset=%u\n", __func__, vm_offset);
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP);
+#else
 	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
+#endif
 
 	if (dma_block_set->flags & DYPLO_DMA_BLOCK_FLAG_SHAREDMEM) {
 		block = &dma_block_set->blocks[0];
@@ -3483,7 +3487,12 @@ int dyplo_core_probe(struct device *device, struct dyplo_dev *dev)
 		goto failed_cdev;
 	}
 
+/* "module" argument was dropped in 6.3 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+	dev->class = class_create(DRIVER_CLASS_NAME);
+#else
 	dev->class = class_create(THIS_MODULE, DRIVER_CLASS_NAME);
+#endif
 	if (IS_ERR(dev->class)) {
 		dev_err(device, "failed to create class\n");
 		retval = PTR_ERR(dev->class);

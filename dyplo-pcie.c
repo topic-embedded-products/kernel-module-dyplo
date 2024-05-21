@@ -259,11 +259,20 @@ static int dyplo_pci_probe(struct pci_dev *pdev,
 		return -ENODEV;
 	}
 	dev->irq = pdev->irq;
-	
+
+	/* pci_set_dma_mask removed in 5.17 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
+	rc = dma_set_mask_and_coherent(device, DMA_BIT_MASK(32));
+	if (rc) {
+		dev_err(device, "Failed to set DMA mask. Aborting.\n");
+		return rc;
+	}
+#else
 	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
 		dev_err(device, "Failed to set DMA mask. Aborting.\n");
 		return -ENODEV;
 	}
+#endif
 
 	rc = dyplo_core_probe(device, dev);
 	if (rc < 0)
